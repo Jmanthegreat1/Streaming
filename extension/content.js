@@ -177,6 +177,7 @@
   let sentHash = "";
   let emptyTicks = 0;
   let tainted = false; // set if the video frame can't be read into a canvas
+  let selecting = false; // true while drawing the subtitle box
 
   // Region is stored as fractions of the VIDEO element, so it tracks the video
   // at any size — including when you switch to fullscreen.
@@ -326,6 +327,7 @@
 
   function ocrTick() {
     if (!isTop || !state.enabled || state.mode !== "ocr") return;
+    if (selecting) return scheduleOcr(); // paused while picking the box
     if (document.hidden || !state.ocrRegion || !state.backendUrl) return scheduleOcr();
     const rect = regionRect();
     if (!tainted) {
@@ -343,7 +345,7 @@
     // Fast path (reading the video frame) is cheap and local, so poll often.
     // Screenshot fallback is rate-limited by Chrome (~2/s), so ease off there.
     if (isTop && state.enabled && state.mode === "ocr") {
-      ocrTimer = setTimeout(ocrTick, tainted ? 550 : 280);
+      ocrTimer = setTimeout(ocrTick, tainted ? 520 : 220);
     }
   }
 
@@ -424,6 +426,12 @@
   }
 
   function startRegionSelect() {
+    // Pause OCR and hide the band so it doesn't sit in the way while picking.
+    selecting = true;
+    if (overlayEl) {
+      overlayEl.style.display = "none";
+      overlayEl.innerHTML = "";
+    }
     const layer = document.createElement("div");
     layer.id = "__subtrans_select";
     const box = document.createElement("div");
@@ -498,10 +506,13 @@
       }
     };
     function cleanup() {
+      selecting = false;
+      prevHash = sentHash = ""; // re-detect the current line right away
       window.removeEventListener("mousemove", onMove, true);
       window.removeEventListener("mouseup", onUp, true);
       window.removeEventListener("keydown", onKey, true);
       layer.remove();
+      scheduleOcr();
     }
     layer.addEventListener("mousedown", onDown);
     window.addEventListener("mousemove", onMove, true);

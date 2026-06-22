@@ -124,6 +124,14 @@ def ocr_translate():
     text = re.sub(r"(?:^|\s)[|_~`^*¦•·=]+(?=\s|$)", " ", text)
     text = re.sub(r"(?:^|\s)[.\-–—]{1,2}(?=\s|$)", " ", text)
     text = " ".join(text.split()).strip(" |_~`^*¦•·=-–—")
+
+    # Hebrew/Arabic are RTL: sentence-final punctuation (? ! .) is read off the
+    # left and lands at the START of the string — move a leading run to the end.
+    if lang.startswith(("heb", "ar", "iw", "fa")):
+        m = re.match(r"^([?!.]+)\s*(.+)$", text)
+        if m:
+            text = m.group(2).rstrip() + m.group(1)
+
     return jsonify({"text": text, "translation": translate_text(text, source, target)})
 
 
