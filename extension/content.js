@@ -296,29 +296,9 @@
     prevHash = fp.hash;
   }
 
-  // Binarize the crop the same way the server does (keep near-white text as
-  // black on white), so on-device Tesseract gets a clean image.
-  function binarize(src) {
-    const scale = src.width < 900 ? 900 / src.width : 1;
-    const c = document.createElement("canvas");
-    c.width = Math.max(1, Math.round(src.width * scale));
-    c.height = Math.max(1, Math.round(src.height * scale));
-    const ctx = c.getContext("2d");
-    ctx.drawImage(src, 0, 0, c.width, c.height);
-    const im = ctx.getImageData(0, 0, c.width, c.height);
-    const d = im.data;
-    for (let i = 0; i < d.length; i += 4) {
-      const v = d[i] >= 215 && d[i + 1] >= 215 && d[i + 2] >= 215 ? 0 : 255;
-      d[i] = d[i + 1] = d[i + 2] = v;
-      d[i + 3] = 255;
-    }
-    ctx.putImageData(im, 0, 0);
-    return c;
-  }
-
   function sendOcr(canvas, rect) {
     const local = state.engine === "local";
-    const image = (local ? binarize(canvas) : canvas).toDataURL("image/png");
+    const image = canvas.toDataURL("image/png");
     inFlight = true;
     let done = false;
     const clear = () => { done = true; inFlight = false; };

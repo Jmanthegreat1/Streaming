@@ -26,12 +26,40 @@ function getWorker() {
   return workerPromise;
 }
 
+// Keep only near-white pixels (the subtitle text) as black-on-white, mirroring
+// the server, so Tesseract gets a clean image.
+function binarize(dataUrl) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const scale = img.width < 900 ? 900 / img.width : 1;
+      const c = document.createElement("canvas");
+      c.width = Math.max(1, Math.round(img.width * scale));
+      c.height = Math.max(1, Math.round(img.height * scale));
+      const ctx = c.getContext("2d");
+      ctx.drawImage(img, 0, 0, c.width, c.height);
+      const im = ctx.getImageData(0, 0, c.width, c.height);
+      const d = im.data;
+      for (let i = 0; i < d.length; i += 4) {
+        const v = d[i] >= 215 && d[i + 1] >= 215 && d[i + 2] >= 215 ? 0 : 255;
+        d[i] = d[i + 1] = d[i + 2] = v;
+        d[i + 3] = 255;
+      }
+      ctx.putImageData(im, 0, 0);
+      resolve(c);
+    };
+    img.onerror = () => reject(new Error("image decode failed"));
+    img.src = dataUrl;
+  });
+}
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.target !== "offscreen" || msg.type !== "ocr") return;
   (async () => {
     try {
       const worker = await getWorker();
-      const { data } = await worker.recognize(msg.image);
+      const canvas = await binarize(msg.image);
+      const { data } = await worker.recognize(canvas);
       sendResponse({ ok: true, text: data.text || "" });
     } catch (e) {
       sendResponse({ ok: false, error: String(e && e.message ? e.message : e) });

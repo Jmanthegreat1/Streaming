@@ -126,6 +126,24 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         const translations = await translateViaGoogle([text], msg.source || "auto", msg.target || "en");
         sendResponse({ ok: true, text, translation: fixLeadingPunct(translations[0] || "") });
       } catch (e) {
+        console.warn("on-device OCR failed:", e); // visible in the service-worker console
+        // Fall back to the server so subtitles still appear while we fix local.
+        if (msg.backendUrl) {
+          try {
+            const res = await fetch(msg.backendUrl.replace(/\/+$/, "") + "/ocr-translate", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ image: msg.image, source: msg.source, target: msg.target, lang: msg.lang }),
+            });
+            if (res.ok) {
+              const data = await res.json();
+              sendResponse({ ok: true, text: data.text, translation: data.translation, fallback: true });
+              return;
+            }
+          } catch (e2) {
+            /* fall through to error */
+          }
+        }
         sendResponse({ ok: false, error: String(e && e.message ? e.message : e) });
       }
     })();
