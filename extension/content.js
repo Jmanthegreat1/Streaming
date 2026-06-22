@@ -39,11 +39,19 @@
   });
 
   // ---------- overlay ----------
+  // The overlay must live inside the fullscreen element to be visible in
+  // fullscreen. If the page fullscreened the <video> itself (which can't hold
+  // children), use its parent instead.
+  function overlayParent() {
+    let p = document.fullscreenElement || document.documentElement;
+    if (p.tagName === "VIDEO") p = p.parentElement || document.documentElement;
+    return p;
+  }
   function ensureOverlay() {
     if (overlayEl && overlayEl.isConnected) return overlayEl;
     overlayEl = document.createElement("div");
     overlayEl.id = "__subtrans_overlay";
-    (document.fullscreenElement || document.documentElement).appendChild(overlayEl);
+    overlayParent().appendChild(overlayEl);
     return overlayEl;
   }
 
@@ -96,9 +104,7 @@
   }
 
   document.addEventListener("fullscreenchange", () => {
-    if (overlayEl) {
-      (document.fullscreenElement || document.documentElement).appendChild(overlayEl);
-    }
+    if (overlayEl) overlayParent().appendChild(overlayEl);
   });
 
   // ==========================================================================
@@ -165,8 +171,21 @@
   let sentHash = "";
   let tainted = false; // set if the video frame can't be read into a canvas
 
+  // Region is stored as fractions of the VIDEO element, so it tracks the video
+  // at any size — including when you switch to fullscreen.
   function regionRect() {
     const r = state.ocrRegion;
+    const v = largestVideo();
+    if (v) {
+      const vr = v.getBoundingClientRect();
+      return {
+        left: vr.left + r.fx * vr.width,
+        top: vr.top + r.fy * vr.height,
+        width: r.fw * vr.width,
+        height: r.fh * vr.height,
+      };
+    }
+    // Fallback if no video is found: treat as viewport fractions.
     return {
       left: r.fx * window.innerWidth,
       top: r.fy * window.innerHeight,
@@ -298,7 +317,7 @@
 
   function scheduleOcr() {
     clearTimeout(ocrTimer);
-    if (isTop && state.enabled && state.mode === "ocr") ocrTimer = setTimeout(ocrTick, 800);
+    if (isTop && state.enabled && state.mode === "ocr") ocrTimer = setTimeout(ocrTick, 450);
   }
 
   // ==========================================================================
@@ -407,16 +426,25 @@
       const w = Math.abs(e.clientX - sx), h = Math.abs(e.clientY - sy);
       cleanup();
       if (w < 12 || h < 8) return toast("That box was too small — try again.");
-      chrome.storage.sync.set({
-        ocrRegion: {
+      const v = largestVideo();
+      let region;
+      if (v) {
+        const vr = v.getBoundingClientRect();
+        region = {
+          fx: (left - vr.left) / vr.width,
+          fy: (top - vr.top) / vr.height,
+          fw: w / vr.width,
+          fh: h / vr.height,
+        };
+      } else {
+        region = {
           fx: left / window.innerWidth,
           fy: top / window.innerHeight,
           fw: w / window.innerWidth,
           fh: h / window.innerHeight,
-        },
-        mode: "ocr",
-        enabled: true,
-      });
+        };
+      }
+      chrome.storage.sync.set({ ocrRegion: region, mode: "ocr", enabled: true });
       toast("Subtitle area set. Translating…");
     };
     const onKey = (e) => {
