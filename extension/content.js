@@ -315,6 +315,7 @@
         if (done) return; // safety already fired; this result is stale
         clear();
         if (chrome.runtime.lastError || !resp) return;
+        if (resp.skip) { sentHash = ""; return; } // busy — keep screen, retry next tick
         if (!resp.ok) {
           toast(local ? "On-device OCR error (see console)" : "Server error. Check the backend URL.");
           return;

@@ -1,33 +1,48 @@
 // Runs in the offscreen document (an extension page), where we're allowed to
-// spin up the Tesseract web worker + WASM. It keeps one warm Hebrew worker and
-// recognizes images on request from the service worker.
+// spin up the Tesseract web worker + WASM. Keeps one warm Hebrew worker, refuses
+// to stack recognitions (prevents a growing backlog), and recycles periodically
+// so it doesn't slow down over a long session.
 
 let workerPromise = null;
+let recognizeCount = 0;
+let busy = false;
+
+function createWorker() {
+  return Tesseract.createWorker("heb", 1, {
+    workerPath: chrome.runtime.getURL("tesseract/worker.min.js"),
+    corePath: chrome.runtime.getURL("tesseract/tesseract-core-simd.wasm.js"),
+    langPath: chrome.runtime.getURL("tesseract/"),
+    workerBlobURL: false,
+    gzip: true,
+  }).then(async (worker) => {
+    await worker.setParameters({ tessedit_pageseg_mode: "6" });
+    return worker;
+  });
+}
 
 function getWorker() {
   if (!workerPromise) {
-    workerPromise = (async () => {
-      const worker = await Tesseract.createWorker("heb", 1, {
-        workerPath: chrome.runtime.getURL("tesseract/worker.min.js"),
-        // Point at the exact bundled core so Tesseract can't request a variant
-        // filename we didn't ship (a common cause of OCR failing in extensions).
-        corePath: chrome.runtime.getURL("tesseract/tesseract-core-simd.wasm.js"),
-        langPath: chrome.runtime.getURL("tesseract/"),
-        workerBlobURL: false, // use the bundled worker URL directly (extension origin)
-        gzip: true,
-      });
-      await worker.setParameters({ tessedit_pageseg_mode: "6" });
-      return worker;
-    })().catch((e) => {
-      workerPromise = null; // allow a retry on next request
+    workerPromise = createWorker().catch((e) => {
+      workerPromise = null; // allow retry
       throw e;
     });
   }
   return workerPromise;
 }
 
-// Keep only near-white pixels (the subtitle text) as black-on-white, mirroring
-// the server, so Tesseract gets a clean image.
+// Recreate the worker every so often to release accumulated memory.
+async function recycleIfNeeded() {
+  if (recognizeCount >= 150 && workerPromise) {
+    const w = await workerPromise.catch(() => null);
+    workerPromise = null;
+    recognizeCount = 0;
+    if (w) {
+      try { await w.terminate(); } catch (e) { /* ignore */ }
+    }
+  }
+}
+
+// Keep only near-white pixels (the subtitle text) as black-on-white.
 function binarize(dataUrl) {
   return new Promise((resolve, reject) => {
     const img = new Image();
@@ -55,15 +70,26 @@ function binarize(dataUrl) {
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.target !== "offscreen" || msg.type !== "ocr") return;
+  if (busy) {
+    sendResponse({ ok: false, busy: true }); // don't stack work — skip this one
+    return true;
+  }
+  busy = true;
   (async () => {
     try {
+      await recycleIfNeeded();
       const worker = await getWorker();
       const canvas = await binarize(msg.image);
-      const { data } = await worker.recognize(canvas);
+      const { data } = await worker.recognize(canvas, {}, {
+        text: true, blocks: false, hocr: false, tsv: false, box: false, unlv: false, osd: false,
+      });
+      recognizeCount++;
       sendResponse({ ok: true, text: data.text || "" });
     } catch (e) {
       sendResponse({ ok: false, error: String(e && e.message ? e.message : e) });
+    } finally {
+      busy = false;
     }
   })();
-  return true; // async response
+  return true;
 });

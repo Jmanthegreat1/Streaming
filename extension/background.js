@@ -37,6 +37,8 @@ async function translateViaGoogle(texts, source, target) {
 
 // ---------- Hebrew OCR text cleanup (mirrors the server) ----------
 function fixLeadingPunct(s) {
+  // Drop a stray leading period that sits right before a dialogue dash.
+  s = s.replace(/^\s*\.\s*(?=[-–—])/, "");
   const m = /^\s*([?!.]+)\s*(.+)$/.exec(s);
   return m ? m[2].replace(/\s+$/, "") + m[1] : s;
 }
@@ -117,6 +119,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       try {
         await ensureOffscreen();
         const ocr = await chrome.runtime.sendMessage({ target: "offscreen", type: "ocr", image: msg.image });
+        if (ocr && ocr.busy) {
+          sendResponse({ ok: true, skip: true }); // worker still busy — keep current line
+          return;
+        }
         if (!ocr || !ocr.ok) throw new Error((ocr && ocr.error) || "on-device OCR failed");
         const text = cleanHebrew(ocr.text);
         if (!text) {

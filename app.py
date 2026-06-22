@@ -49,6 +49,7 @@ def _translate_one(text, source, target):
 def _fix_leading_punct(s):
     """RTL artifact: sentence punctuation (? ! .) lands at the START. Move a
     leading run to the end — English never legitimately starts with these."""
+    s = re.sub(r"^\s*\.\s*(?=[-–—])", "", s)  # drop a stray period before a dialogue dash
     m = re.match(r"^\s*([?!.]+)\s*(.+)$", s)
     return (m.group(2).rstrip() + m.group(1)) if m else s
 
