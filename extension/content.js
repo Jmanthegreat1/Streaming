@@ -88,18 +88,24 @@
       el.innerHTML = "";
       return;
     }
+    // Font scales with the box but stays modest. The band covers the box and
+    // grows vertically (centered on it) so longer English wraps, never clips.
+    const fontPx = Math.max(12, Math.min(Math.round(rect.height * 0.38), 30));
     el.style.display = "flex";
     el.style.left = rect.left + "px";
-    el.style.top = rect.top + "px";
     el.style.width = rect.width + "px";
-    el.style.height = rect.height + "px";
-    el.style.bottom = "auto";
+    el.style.minHeight = rect.height + "px";
+    el.style.height = "auto";
     el.style.right = "auto";
+    el.style.bottom = "auto";
+    el.style.top = rect.top + rect.height / 2 + "px";
+    el.style.transform = "translateY(-50%)";
     el.innerHTML = "";
     const d = document.createElement("div");
     d.className = "__subtrans_en";
     d.textContent = text;
-    d.style.fontSize = Math.max(14, Math.min(rect.height * 0.55, 46)) + "px";
+    d.style.fontSize = fontPx + "px";
+    d.style.fontWeight = fontPx >= 23 ? "700" : "600";
     el.appendChild(d);
   }
 

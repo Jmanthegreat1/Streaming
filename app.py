@@ -15,6 +15,7 @@ Locally, point it at a Tesseract install with TESSERACT_CMD / TESSDATA_PREFIX.
 """
 
 import os
+import re
 import base64
 import binascii
 from functools import lru_cache
@@ -23,7 +24,7 @@ from io import BytesIO
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from deep_translator import GoogleTranslator
-from PIL import Image, ImageChops
+from PIL import Image, ImageChops, ImageFilter
 import pytesseract
 
 app = Flask(__name__)
@@ -105,6 +106,7 @@ def ocr_translate():
     band = lambda c: c.point(lambda p: 255 if p >= thresh else 0)
     mask = ImageChops.multiply(ImageChops.multiply(band(r), band(g)), band(b))
     img = ImageChops.invert(mask)  # black text on white
+    img = img.filter(ImageFilter.MedianFilter(3))  # drop isolated specks (stray dots/dashes)
     if img.width < 900:
         factor = 900 / img.width
         img = img.resize((round(img.width * factor), round(img.height * factor)))
@@ -116,8 +118,12 @@ def ocr_translate():
     except pytesseract.TesseractError as e:
         return jsonify({"error": "OCR failed: " + str(e)}), 500
 
-    # Collapse the line breaks Tesseract adds between wrapped subtitle lines.
+    # Collapse line breaks, then drop OCR noise: isolated symbol/dash tokens and
+    # stray symbols at the edges (kept in-word hyphens and sentence punctuation).
     text = " ".join(text.split())
+    text = re.sub(r"(?:^|\s)[|_~`^*¦•·=]+(?=\s|$)", " ", text)
+    text = re.sub(r"(?:^|\s)[.\-–—]{1,2}(?=\s|$)", " ", text)
+    text = " ".join(text.split()).strip(" |_~`^*¦•·=-–—")
     return jsonify({"text": text, "translation": translate_text(text, source, target)})
 
 
