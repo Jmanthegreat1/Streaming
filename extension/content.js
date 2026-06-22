@@ -88,24 +88,25 @@
       el.innerHTML = "";
       return;
     }
-    // Font scales with the box but stays modest. The band covers the box and
-    // grows vertically (centered on it) so longer English wraps, never clips.
-    const fontPx = Math.max(12, Math.min(Math.round(rect.height * 0.38), 30));
-    el.style.display = "flex";
-    el.style.left = rect.left + "px";
-    el.style.width = rect.width + "px";
-    el.style.minHeight = rect.height + "px";
+    // The band hugs the text: it expands and shrinks with the sentence length,
+    // centered in the area you highlighted, and wraps within that width. Font is
+    // a steady fraction of the screen (like normal subtitles), not the box size.
+    const fontPx = Math.max(15, Math.min(Math.round(window.innerHeight * 0.038), 38));
+    el.style.display = "inline-block";
+    el.style.left = rect.left + rect.width / 2 + "px";
+    el.style.top = rect.top + rect.height / 2 + "px";
+    el.style.transform = "translate(-50%, -50%)";
+    el.style.maxWidth = Math.round(rect.width) + "px";
+    el.style.width = "auto";
     el.style.height = "auto";
+    el.style.minHeight = "0";
     el.style.right = "auto";
     el.style.bottom = "auto";
-    el.style.top = rect.top + rect.height / 2 + "px";
-    el.style.transform = "translateY(-50%)";
     el.innerHTML = "";
     const d = document.createElement("div");
     d.className = "__subtrans_en";
     d.textContent = text;
     d.style.fontSize = fontPx + "px";
-    d.style.fontWeight = fontPx >= 23 ? "700" : "600";
     el.appendChild(d);
   }
 

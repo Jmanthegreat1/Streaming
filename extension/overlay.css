@@ -48,20 +48,19 @@
 /* OCR mode: opaque band laid over the original (burned-in) subtitle */
 #__subtrans_overlay.__subtrans_cover {
   display: none;
-  align-items: center;
-  justify-content: center;
   background: #000;
   text-align: center;
-  padding: 3px 12px;
+  padding: 4px 18px;
   box-sizing: border-box;
+  border-radius: 3px;
 }
 #__subtrans_overlay.__subtrans_cover .__subtrans_en {
   background: transparent;
   color: #fff;
-  line-height: 1.15;
+  font-weight: 700;
+  line-height: 1.18;
   text-shadow: none;
   padding: 0;
-  max-width: 100%;
   white-space: normal;
   word-break: break-word;
 }

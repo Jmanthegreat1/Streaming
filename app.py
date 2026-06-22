@@ -121,20 +121,21 @@ def ocr_translate():
     # Single fast LSTM pass; image is already black-on-white.
     config = f"--oem 1 --psm {psm} -c tessedit_do_invert=0"
     try:
-        text = pytesseract.image_to_string(img, lang=lang, config=config).strip()
+        raw = pytesseract.image_to_string(img, lang=lang, config=config)
     except pytesseract.TesseractError as e:
         return jsonify({"error": "OCR failed: " + str(e)}), 500
 
-    # Collapse line breaks, then drop OCR noise: isolated symbol/dash tokens and
-    # stray symbols at the edges (kept in-word hyphens and sentence punctuation).
-    text = " ".join(text.split())
-    text = re.sub(r"(?:^|\s)[|_~`^*¦•·=]+(?=\s|$)", " ", text)
-    text = re.sub(r"(?:^|\s)[.\-–—]{1,2}(?=\s|$)", " ", text)
-    text = " ".join(text.split()).strip(" |_~`^*¦•·=-–—")
+    # A sentence split across two lines puts its period at the START of the next
+    # line (RTL), so fix leading punctuation PER LINE, then join.
+    lines = [_fix_leading_punct(" ".join(ln.split())) for ln in raw.splitlines()]
+    text = " ".join(ln for ln in lines if ln)
 
-    # Fix the RTL leading-punctuation artifact on the recognized text AND on the
-    # final English (belt and suspenders — the user sees the translation).
+    # Drop OCR noise: isolated symbol tokens and stray symbols at the edges.
+    text = re.sub(r"(?:^|\s)[|_~`^*¦•·=]+(?=\s|$)", " ", text)
+    text = re.sub(r"(?:^|\s)[.]{1,2}(?=\s|$)", " ", text)
+    text = " ".join(text.split()).strip(" |_~`^*¦•·=")
     text = _fix_leading_punct(text)
+
     translation = _fix_leading_punct(translate_text(text, source, target))
     return jsonify({"text": text, "translation": translation})
 
