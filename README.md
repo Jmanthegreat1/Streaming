@@ -1,3 +1,13 @@
+---
+title: Subtitle Translate
+emoji: 🎬
+colorFrom: blue
+colorTo: indigo
+sdk: docker
+app_port: 7860
+pinned: false
+---
+
 # Live Subtitle Translator
 
 Translate a web player's subtitles to **English** (or any language) **live**, while you
@@ -25,17 +35,32 @@ Streaming/
 
 ---
 
-## 1. Put the backend on Render (required for OCR)
+## 1. Put the backend on a free host (required for OCR)
 
-OCR runs server-side (Tesseract), so the Render service is needed for Kan.
+OCR runs server-side (Tesseract), so the service must be hosted. Pick **one** free option.
+The repo is already on GitHub at `Jmanthegreat1/Streaming`.
 
-1. Push this folder to a **GitHub repo** (see step 3 — you've already started this).
-2. On **render.com** → **New ► Blueprint** → pick the repo. It reads `render.yaml` and
-   builds the **Docker** image (Tesseract + Hebrew included). First build takes a few minutes.
-3. Copy the service URL, e.g. `https://subtitle-translate.onrender.com`.
+### Option A — Hugging Face Spaces (free, no credit card) ⭐ recommended
+1. Sign in at **huggingface.co** → **New ► Space**.
+2. Name it, choose **Docker** as the SDK, **blank** template, **Public**, **Free** hardware.
+3. Upload `app.py`, `Dockerfile`, `requirements.txt`, and this `README.md` (its top
+   front-matter tells the Space to build as Docker on port 7860), **or** push them with git:
+   ```
+   git remote add space https://huggingface.co/spaces/<you>/<space-name>
+   git push space main
+   ```
+4. Wait for the build (a few minutes). Your URL is `https://<you>-<space-name>.hf.space`.
 
-> The free plan sleeps when idle, so the **first** subtitle after a pause may take ~30s
+### Option B — Koyeb (free, deploys straight from GitHub)
+1. Sign in at **koyeb.com** → **Create Service ► GitHub** → pick `Jmanthegreat1/Streaming`.
+2. It detects the `Dockerfile` and deploys. Copy the public `…koyeb.app` URL.
+
+> Free hosts **sleep when idle**, so the **first** subtitle after a pause may take ~30s
 > while the server wakes; after that it's quick.
+
+### Don't want a server at all?
+OCR can also run fully inside the browser (no hosting) — ask me to switch to the
+client-side build. It's more experimental, but removes the hosting step entirely.
 
 ## 2. Install the extension
 
