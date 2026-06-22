@@ -136,6 +136,11 @@ def ocr_translate():
     text = " ".join(text.split()).strip(" |_~`^*¦•·=")
     text = _fix_leading_punct(text)
 
+    # Guard against OCR noise (stray specks between lines) becoming random words
+    # like "corpse": require at least a couple of real Hebrew letters.
+    if lang.startswith(("heb", "iw")) and len(re.findall(r"[א-ת]", text)) < 2:
+        return jsonify({"text": "", "translation": ""})
+
     translation = _fix_leading_punct(translate_text(text, source, target))
     return jsonify({"text": text, "translation": translation})
 
