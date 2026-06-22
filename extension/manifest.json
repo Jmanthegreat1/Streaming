@@ -1,9 +1,9 @@
 {
   "manifest_version": 3,
   "name": "Live Subtitle Translator",
-  "version": "1.0.0",
-  "description": "Translate on-screen subtitles to English (or any language) live while you watch. Built for Kan (כאן) and other web players.",
-  "permissions": ["storage", "activeTab"],
+  "version": "1.1.0",
+  "description": "Translate on-screen subtitles to English live while you watch. On-device (Tesseract) or server OCR.",
+  "permissions": ["storage", "activeTab", "offscreen"],
   "host_permissions": ["http://*/*", "https://*/*"],
   "background": {
     "service_worker": "background.js"
@@ -19,6 +19,12 @@
       "run_at": "document_idle",
       "js": ["content.js"],
       "css": ["overlay.css"]
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["tesseract/*", "offscreen.html"],
+      "matches": ["<all_urls>"]
     }
   ]
 }

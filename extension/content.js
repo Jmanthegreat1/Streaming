@@ -12,6 +12,7 @@
   const DEFAULTS = {
     enabled: false,
     mode: "ocr", // "ocr" | "text"
+    engine: "local", // "local" (on-device Tesseract) | "server"
     target: "en",
     source: "auto",
     lang: "heb",
@@ -290,24 +291,54 @@
     // the in-flight one returns, the next tick picks up whatever is current now.
     if (fp.hash === prevHash && fp.hash !== sentHash && !inFlight) {
       sentHash = fp.hash;
-      sendOcr(canvas.toDataURL("image/png"), rect);
+      sendOcr(canvas, rect);
     }
     prevHash = fp.hash;
   }
 
-  function sendOcr(dataUrl, rect) {
+  // Binarize the crop the same way the server does (keep near-white text as
+  // black on white), so on-device Tesseract gets a clean image.
+  function binarize(src) {
+    const scale = src.width < 900 ? 900 / src.width : 1;
+    const c = document.createElement("canvas");
+    c.width = Math.max(1, Math.round(src.width * scale));
+    c.height = Math.max(1, Math.round(src.height * scale));
+    const ctx = c.getContext("2d");
+    ctx.drawImage(src, 0, 0, c.width, c.height);
+    const im = ctx.getImageData(0, 0, c.width, c.height);
+    const d = im.data;
+    for (let i = 0; i < d.length; i += 4) {
+      const v = d[i] >= 215 && d[i + 1] >= 215 && d[i + 2] >= 215 ? 0 : 255;
+      d[i] = d[i + 1] = d[i + 2] = v;
+      d[i + 3] = 255;
+    }
+    ctx.putImageData(im, 0, 0);
+    return c;
+  }
+
+  function sendOcr(canvas, rect) {
+    const local = state.engine === "local";
+    const image = (local ? binarize(canvas) : canvas).toDataURL("image/png");
     inFlight = true;
     let done = false;
     const clear = () => { done = true; inFlight = false; };
-    const safety = setTimeout(clear, 3500); // don't get stuck if a request hangs
+    // The first on-device call loads the model (can take several seconds); after
+    // that it's fast and warm. Server calls should never take this long.
+    const safety = setTimeout(clear, local ? 15000 : 3500);
     chrome.runtime.sendMessage(
-      { type: "ocrTranslate", image: dataUrl, source: state.source, target: state.target, lang: state.lang, backendUrl: state.backendUrl },
+      {
+        type: local ? "ocrLocal" : "ocrTranslate",
+        image, source: state.source, target: state.target, lang: state.lang, backendUrl: state.backendUrl,
+      },
       (resp) => {
         clearTimeout(safety);
         if (done) return; // safety already fired; this result is stale
         clear();
         if (chrome.runtime.lastError || !resp) return;
-        if (!resp.ok) return toast("Translation server error. Check the backend URL.");
+        if (!resp.ok) {
+          toast(local ? "On-device OCR error (see console)" : "Server error. Check the backend URL.");
+          return;
+        }
         showCover(resp.translation || "", rect);
       }
     );
@@ -338,7 +369,8 @@
   function ocrTick() {
     if (!isTop || !state.enabled || state.mode !== "ocr") return;
     if (selecting) return scheduleOcr(); // paused while picking the box
-    if (document.hidden || !state.ocrRegion || !state.backendUrl) return scheduleOcr();
+    if (document.hidden || !state.ocrRegion) return scheduleOcr();
+    if (state.engine !== "local" && !state.backendUrl) return scheduleOcr();
     const rect = regionRect();
     if (!tainted) {
       const c = grabFromVideo(rect);

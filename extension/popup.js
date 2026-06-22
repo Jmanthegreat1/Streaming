@@ -7,7 +7,7 @@ const LANGUAGES = {
   Russian: "ru", Spanish: "es", Turkish: "tr", Ukrainian: "uk", Yiddish: "yi",
 };
 
-const DEFAULTS = { enabled: false, mode: "ocr", target: "en", backendUrl: "" };
+const DEFAULTS = { enabled: false, mode: "ocr", engine: "local", target: "en", backendUrl: "" };
 const $ = (id) => document.getElementById(id);
 
 for (const [name, code] of Object.entries(LANGUAGES)) {
@@ -17,10 +17,14 @@ for (const [name, code] of Object.entries(LANGUAGES)) {
   $("target").appendChild(opt);
 }
 
-function reflectMode(mode) {
+function reflectControls() {
+  const mode = $("mode").value;
+  const engine = $("engine").value;
   $("ocrControls").style.display = mode === "ocr" ? "" : "none";
   $("textControls").style.display = mode === "text" ? "" : "none";
-  $("req").textContent = mode === "ocr" ? "(required)" : "";
+  // The backend URL is only needed for server-side OCR.
+  const needsBackend = mode === "ocr" && engine === "server";
+  $("req").textContent = needsBackend ? "(required)" : "(server mode only)";
 }
 
 function reflectPower(on) {
@@ -33,9 +37,15 @@ function reflectPower(on) {
 chrome.storage.sync.get(DEFAULTS, (s) => {
   reflectPower(s.enabled);
   $("mode").value = s.mode;
+  $("engine").value = s.engine;
   $("target").value = s.target;
   $("backendUrl").value = s.backendUrl;
-  reflectMode(s.mode);
+  reflectControls();
+});
+
+$("engine").addEventListener("change", (e) => {
+  chrome.storage.sync.set({ engine: e.target.value });
+  reflectControls();
 });
 
 $("power").addEventListener("click", () => {
@@ -52,7 +62,7 @@ $("target").addEventListener("change", (e) => chrome.storage.sync.set({ target: 
 $("backendUrl").addEventListener("change", (e) => chrome.storage.sync.set({ backendUrl: e.target.value.trim() }));
 $("mode").addEventListener("change", (e) => {
   chrome.storage.sync.set({ mode: e.target.value });
-  reflectMode(e.target.value);
+  reflectControls();
 });
 
 function sendToTab(message, close) {
