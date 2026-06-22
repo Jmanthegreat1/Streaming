@@ -23,15 +23,31 @@ function reflectMode(mode) {
   $("req").textContent = mode === "ocr" ? "(required)" : "";
 }
 
+function reflectPower(on) {
+  const btn = $("power");
+  btn.classList.toggle("on", on);
+  btn.classList.toggle("off", !on);
+  $("powerLabel").textContent = on ? "ON" : "Turn ON";
+}
+
 chrome.storage.sync.get(DEFAULTS, (s) => {
-  $("enabled").checked = s.enabled;
+  reflectPower(s.enabled);
   $("mode").value = s.mode;
   $("target").value = s.target;
   $("backendUrl").value = s.backendUrl;
   reflectMode(s.mode);
 });
 
-$("enabled").addEventListener("change", (e) => chrome.storage.sync.set({ enabled: e.target.checked }));
+$("power").addEventListener("click", () => {
+  const on = !$("power").classList.contains("on");
+  reflectPower(on);
+  chrome.storage.sync.set({ enabled: on });
+});
+
+// Keep the button in sync if another control flips it (e.g. Select subtitle area).
+chrome.storage.onChanged.addListener((changes) => {
+  if (changes.enabled) reflectPower(changes.enabled.newValue);
+});
 $("target").addEventListener("change", (e) => chrome.storage.sync.set({ target: e.target.value }));
 $("backendUrl").addEventListener("change", (e) => chrome.storage.sync.set({ backendUrl: e.target.value.trim() }));
 $("mode").addEventListener("change", (e) => {
