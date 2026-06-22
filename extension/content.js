@@ -1,9 +1,12 @@
 // Runs on every page. Two ways to get subtitles:
 //   TEXT mode — read native <track> cues or a DOM element you click.
-//   OCR  mode — screenshot a region you draw over burned-in subtitles, send it
-//               to the backend to read + translate, and overlay the English.
-// The OCR overlay is drawn just ABOVE the captured region so it never feeds
-// back into the screenshot (and because burned-in Hebrew can't be removed).
+//   OCR  mode — read burned-in subtitles from a region you draw, translate them,
+//               and lay the English right over the original.
+//
+// OCR reads pixels straight from the <video> frame when possible (that frame
+// doesn't contain our overlay, so we can cover the original cleanly). If the
+// video can't be read into a canvas (cross-origin taint), it falls back to a
+// tab screenshot, briefly hiding our overlay during each capture.
 
 (() => {
   const DEFAULTS = {
@@ -11,14 +14,14 @@
     mode: "ocr", // "ocr" | "text"
     target: "en",
     source: "auto",
-    lang: "heb", // OCR language
+    lang: "heb",
     backendUrl: "",
     showOriginal: false,
-    selector: null, // taught element (text mode)
-    ocrRegion: null, // {fx, fy, fw, fh} fractions of the video rect
+    selector: null,
+    ocrRegion: null, // {fx, fy, fw, fh} fractions of the viewport
   };
   const state = { ...DEFAULTS };
-  const isTop = window === window.top; // OCR (capture + region) runs top-frame only
+  const isTop = window === window.top; // OCR runs top-frame only
 
   let overlayEl = null;
   let lastText = "";
@@ -44,26 +47,52 @@
     return overlayEl;
   }
 
-  function showText(en, original, bottomPx) {
+  // TEXT mode: a centered band near the bottom.
+  function showText(en, original) {
     const el = ensureOverlay();
+    el.className = "";
+    el.style.cssText = "";
     if (!en) {
       el.style.display = "none";
       el.innerHTML = "";
       return;
     }
     el.style.display = "block";
-    el.style.bottom = bottomPx == null ? "" : bottomPx + "px";
     el.innerHTML = "";
-    const enDiv = document.createElement("div");
-    enDiv.className = "__subtrans_en";
-    enDiv.textContent = en;
-    el.appendChild(enDiv);
+    const d = document.createElement("div");
+    d.className = "__subtrans_en";
+    d.textContent = en;
+    el.appendChild(d);
     if (state.showOriginal && original) {
       const o = document.createElement("div");
       o.className = "__subtrans_orig";
       o.textContent = original;
       el.appendChild(o);
     }
+  }
+
+  // OCR mode: an opaque band placed exactly over the original subtitle.
+  function showCover(text, rect) {
+    const el = ensureOverlay();
+    el.className = "__subtrans_cover";
+    if (!text) {
+      el.style.display = "none";
+      el.innerHTML = "";
+      return;
+    }
+    el.style.display = "flex";
+    el.style.left = rect.left + "px";
+    el.style.top = rect.top + "px";
+    el.style.width = rect.width + "px";
+    el.style.height = rect.height + "px";
+    el.style.bottom = "auto";
+    el.style.right = "auto";
+    el.innerHTML = "";
+    const d = document.createElement("div");
+    d.className = "__subtrans_en";
+    d.textContent = text;
+    d.style.fontSize = Math.max(14, Math.min(rect.height * 0.55, 46)) + "px";
+    el.appendChild(d);
   }
 
   document.addEventListener("fullscreenchange", () => {
@@ -76,10 +105,7 @@
   // TEXT MODE
   // ==========================================================================
   function translate(text) {
-    if (cache.has(text)) {
-      showText(cache.get(text), text);
-      return;
-    }
+    if (cache.has(text)) return showText(cache.get(text), text);
     chrome.runtime.sendMessage(
       { type: "translate", texts: [text], source: state.source, target: state.target, backendUrl: state.backendUrl },
       (resp) => {
@@ -91,7 +117,6 @@
       }
     );
   }
-
   function handleText(raw) {
     const text = (raw || "").replace(/\s+/g, " ").trim();
     if (text === lastText) return;
@@ -99,7 +124,6 @@
     if (!text) return showText("", "");
     translate(text);
   }
-
   function hookTextTracks() {
     document.querySelectorAll("video").forEach((v) => {
       const tracks = v.textTracks;
@@ -117,7 +141,6 @@
       }
     });
   }
-
   let domObserver = null;
   function startDomObserver() {
     if (domObserver) domObserver.disconnect();
@@ -140,10 +163,8 @@
   let ocrTimer = null;
   let prevHash = "";
   let sentHash = "";
+  let tainted = false; // set if the video frame can't be read into a canvas
 
-  // Region is stored as fractions of the (top) viewport, so it maps directly
-  // onto the full-tab screenshot. Selecting while fullscreen (as on a TV) keeps
-  // it aligned with the video.
   function regionRect() {
     const r = state.ocrRegion;
     return {
@@ -154,12 +175,50 @@
     };
   }
 
-  function fingerprint(srcCanvas) {
+  function largestVideo() {
+    let best = null, area = 0;
+    document.querySelectorAll("video").forEach((v) => {
+      const r = v.getBoundingClientRect();
+      const a = r.width * r.height;
+      if (a > area && v.videoWidth) {
+        area = a;
+        best = v;
+      }
+    });
+    return best;
+  }
+
+  // Crop the region directly from the video frame. Returns a canvas, or null
+  // (and flags `tainted`) if the frame can't be read.
+  function grabFromVideo(rect) {
+    const v = largestVideo();
+    if (!v || !v.videoWidth) return null;
+    const vr = v.getBoundingClientRect();
+    const sx = ((rect.left - vr.left) / vr.width) * v.videoWidth;
+    const sy = ((rect.top - vr.top) / vr.height) * v.videoHeight;
+    const sw = (rect.width / vr.width) * v.videoWidth;
+    const sh = (rect.height / vr.height) * v.videoHeight;
+    if (sw < 2 || sh < 2) return null;
+    const c = document.createElement("canvas");
+    c.width = Math.round(sw);
+    c.height = Math.round(sh);
+    const ctx = c.getContext("2d");
+    try {
+      ctx.drawImage(v, sx, sy, sw, sh, 0, 0, c.width, c.height);
+      ctx.getImageData(0, 0, 1, 1); // throws if the frame is cross-origin tainted
+      return c;
+    } catch (e) {
+      tainted = true;
+      return null;
+    }
+  }
+
+  function fingerprint(canvas) {
     const tc = document.createElement("canvas");
     tc.width = 28;
     tc.height = 6;
     const ctx = tc.getContext("2d");
-    ctx.drawImage(srcCanvas, 0, 0, 28, 6);
+    ctx.drawImage(canvas, 0, 0, 28, 6);
     const d = ctx.getImageData(0, 0, 28, 6).data;
     let hash = "", min = 255, max = 0;
     for (let i = 0; i < d.length; i += 4) {
@@ -171,51 +230,18 @@
     return { hash, variance: max - min };
   }
 
-  function ocrTick() {
-    if (!isTop || !state.enabled || state.mode !== "ocr") return;
-    if (document.hidden || !state.ocrRegion || !state.backendUrl) return scheduleOcr();
-
-    const rect = regionRect();
-
-    chrome.runtime.sendMessage({ type: "capture" }, (resp) => {
-      if (chrome.runtime.lastError || !resp || !resp.ok) return scheduleOcr();
-      const img = new Image();
-      img.onload = () => {
-        processFrame(img, rect);
-        scheduleOcr();
-      };
-      img.onerror = scheduleOcr;
-      img.src = resp.dataUrl;
-    });
-  }
-
-  function processFrame(img, rect) {
-    const scaleX = img.naturalWidth / window.innerWidth;
-    const scaleY = img.naturalHeight / window.innerHeight;
-    const sw = Math.max(1, Math.round(rect.width * scaleX));
-    const sh = Math.max(1, Math.round(rect.height * scaleY));
-    const sx = Math.max(0, Math.round(rect.left * scaleX));
-    const sy = Math.max(0, Math.round(rect.top * scaleY));
-
-    const canvas = document.createElement("canvas");
-    canvas.width = sw;
-    canvas.height = sh;
-    canvas.getContext("2d").drawImage(img, sx, sy, sw, sh, 0, 0, sw, sh);
-
+  function processCrop(canvas, rect) {
     const fp = fingerprint(canvas);
-
-    // Near-uniform region = no subtitle on screen right now.
+    // Near-uniform = no subtitle on screen right now.
     if (fp.variance < 28) {
       if (sentHash !== "EMPTY") {
         sentHash = "EMPTY";
-        showText("", "");
+        showCover("", rect);
       }
       prevHash = fp.hash;
       return;
     }
-
-    // Fire OCR only once the region has been stable for two ticks (avoids
-    // catching a subtitle mid-fade) and we haven't already read this frame.
+    // OCR only once the region is stable for two ticks and not already read.
     if (fp.hash === prevHash && fp.hash !== sentHash) {
       sentHash = fp.hash;
       sendOcr(canvas.toDataURL("image/png"), rect);
@@ -225,24 +251,49 @@
 
   function sendOcr(dataUrl, rect) {
     chrome.runtime.sendMessage(
-      {
-        type: "ocrTranslate",
-        image: dataUrl,
-        source: state.source,
-        target: state.target,
-        lang: state.lang,
-        backendUrl: state.backendUrl,
-      },
+      { type: "ocrTranslate", image: dataUrl, source: state.source, target: state.target, lang: state.lang, backendUrl: state.backendUrl },
       (resp) => {
         if (chrome.runtime.lastError || !resp) return;
-        if (!resp.ok) {
-          toast("Translation server error. Check the backend URL.");
-          return;
-        }
-        const bottom = Math.max(8, window.innerHeight - rect.top + 10);
-        showText(resp.translation || "", resp.text || "", bottom);
+        if (!resp.ok) return toast("Translation server error. Check the backend URL.");
+        showCover(resp.translation || "", rect);
       }
     );
+  }
+
+  function captureScreenshot(rect) {
+    if (overlayEl) overlayEl.style.visibility = "hidden"; // keep our band out of the shot
+    chrome.runtime.sendMessage({ type: "capture" }, (resp) => {
+      if (overlayEl) overlayEl.style.visibility = "visible";
+      scheduleOcr();
+      if (chrome.runtime.lastError || !resp || !resp.ok) return;
+      const img = new Image();
+      img.onload = () => {
+        const scaleX = img.naturalWidth / window.innerWidth;
+        const scaleY = img.naturalHeight / window.innerHeight;
+        const c = document.createElement("canvas");
+        c.width = Math.max(1, Math.round(rect.width * scaleX));
+        c.height = Math.max(1, Math.round(rect.height * scaleY));
+        c.getContext("2d").drawImage(
+          img, Math.round(rect.left * scaleX), Math.round(rect.top * scaleY), c.width, c.height, 0, 0, c.width, c.height
+        );
+        processCrop(c, rect);
+      };
+      img.src = resp.dataUrl;
+    });
+  }
+
+  function ocrTick() {
+    if (!isTop || !state.enabled || state.mode !== "ocr") return;
+    if (document.hidden || !state.ocrRegion || !state.backendUrl) return scheduleOcr();
+    const rect = regionRect();
+    if (!tainted) {
+      const c = grabFromVideo(rect);
+      if (c) {
+        processCrop(c, rect);
+        return scheduleOcr();
+      }
+    }
+    captureScreenshot(rect); // fallback (schedules itself)
   }
 
   function scheduleOcr() {
@@ -268,22 +319,25 @@
     lastText = "";
 
     if (!state.enabled) {
-      showText("", "");
+      if (overlayEl) {
+        overlayEl.style.display = "none";
+        overlayEl.innerHTML = "";
+      }
       return;
     }
-
     if (state.mode === "text") {
+      showText("", "");
       hookTextTracks();
       pollTimer = setInterval(hookTextTracks, 2000);
       startDomObserver();
     } else {
-      showText("", "");
+      if (overlayEl) overlayEl.style.display = "none";
       scheduleOcr();
     }
   }
 
   // ==========================================================================
-  // pickers (text element / OCR region)
+  // pickers
   // ==========================================================================
   let hoverEl = null;
   function startTeaching() {
@@ -322,7 +376,6 @@
     return parts.join(" > ");
   }
 
-  // OCR region: drag a rectangle over the burned-in subtitles.
   function startRegionSelect() {
     const layer = document.createElement("div");
     layer.id = "__subtrans_select";
@@ -333,18 +386,18 @@
     toast("Drag a box over the Hebrew subtitles. Esc to cancel.");
 
     let sx = 0, sy = 0, dragging = false;
+    const place = (x, y) => {
+      box.style.left = Math.min(sx, x) + "px";
+      box.style.top = Math.min(sy, y) + "px";
+      box.style.width = Math.abs(x - sx) + "px";
+      box.style.height = Math.abs(y - sy) + "px";
+    };
     const onDown = (e) => {
       dragging = true;
       sx = e.clientX;
       sy = e.clientY;
       box.style.display = "block";
       place(e.clientX, e.clientY);
-    };
-    const place = (x, y) => {
-      box.style.left = Math.min(sx, x) + "px";
-      box.style.top = Math.min(sy, y) + "px";
-      box.style.width = Math.abs(x - sx) + "px";
-      box.style.height = Math.abs(y - sy) + "px";
     };
     const onMove = (e) => dragging && place(e.clientX, e.clientY);
     const onUp = (e) => {
@@ -354,13 +407,16 @@
       const w = Math.abs(e.clientX - sx), h = Math.abs(e.clientY - sy);
       cleanup();
       if (w < 12 || h < 8) return toast("That box was too small — try again.");
-      const region = {
-        fx: left / window.innerWidth,
-        fy: top / window.innerHeight,
-        fw: w / window.innerWidth,
-        fh: h / window.innerHeight,
-      };
-      chrome.storage.sync.set({ ocrRegion: region, mode: "ocr", enabled: true });
+      chrome.storage.sync.set({
+        ocrRegion: {
+          fx: left / window.innerWidth,
+          fy: top / window.innerHeight,
+          fw: w / window.innerWidth,
+          fh: h / window.innerHeight,
+        },
+        mode: "ocr",
+        enabled: true,
+      });
       toast("Subtitle area set. Translating…");
     };
     const onKey = (e) => {
@@ -370,7 +426,6 @@
       }
     };
     function cleanup() {
-      layer.removeEventListener("mousedown", onDown);
       window.removeEventListener("mousemove", onMove, true);
       window.removeEventListener("mouseup", onUp, true);
       window.removeEventListener("keydown", onKey, true);

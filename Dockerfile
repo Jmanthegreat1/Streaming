@@ -11,6 +11,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
-# Render provides $PORT; default to 10000 for local docker runs.
-ENV PORT=10000
+# Hosts set $PORT (Render, Koyeb); default 7860 also matches Hugging Face Spaces.
+ENV PORT=7860
+EXPOSE 7860
 CMD ["sh", "-c", "gunicorn app:app --bind 0.0.0.0:${PORT} --timeout 120 --workers 2"]
