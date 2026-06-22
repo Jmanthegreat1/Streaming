@@ -81,3 +81,13 @@
   background: rgba(79, 140, 255, 0.18);
   pointer-events: none;
 }
+#__subtrans_curbox {
+  position: fixed;
+  border: 2px dashed #3ddc7e;
+  background: rgba(61, 220, 126, 0.12);
+  pointer-events: none;
+  color: #3ddc7e;
+  font: 600 12px system-ui, sans-serif;
+  padding: 2px 6px;
+  box-sizing: border-box;
+}

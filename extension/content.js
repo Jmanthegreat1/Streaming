@@ -233,28 +233,41 @@
     }
   }
 
+  // Signature based only on BRIGHT pixels (the subtitle text), so the moving
+  // video behind/around the text doesn't make every frame look "changed".
+  // Nearest-neighbour downscale (smoothing off) keeps bright strokes bright.
   function fingerprint(canvas) {
+    const W = 240, H = 20;
     const tc = document.createElement("canvas");
-    tc.width = 28;
-    tc.height = 6;
+    tc.width = W;
+    tc.height = H;
     const ctx = tc.getContext("2d");
-    ctx.drawImage(canvas, 0, 0, 28, 6);
-    const d = ctx.getImageData(0, 0, 28, 6).data;
-    let hash = "", min = 255, max = 0;
-    for (let i = 0; i < d.length; i += 4) {
-      const lum = (d[i] + d[i + 1] + d[i + 2]) / 3;
-      hash += lum > 128 ? "1" : "0";
-      if (lum < min) min = lum;
-      if (lum > max) max = lum;
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(canvas, 0, 0, W, H);
+    const d = ctx.getImageData(0, 0, W, H).data;
+    const cols = 60;
+    const col = new Array(cols).fill(0);
+    let bright = 0;
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        const i = (y * W + x) * 4;
+        // White-ish = all channels high. Ignores bright COLORED background.
+        if (d[i] > 200 && d[i + 1] > 200 && d[i + 2] > 200) {
+          bright++;
+          col[((x * cols) / W) | 0]++;
+        }
+      }
     }
-    return { hash, variance: max - min };
+    let hash = "";
+    for (let c = 0; c < cols; c++) hash += col[c] > 1 ? "1" : "0";
+    return { hash, bright };
   }
 
   function processCrop(canvas, rect) {
     const fp = fingerprint(canvas);
-    // Near-uniform = no subtitle right now. Only clear after a sustained gap so
-    // brief dips between lines (or dark frames) don't make the English flicker.
-    if (fp.variance < 24) {
+    // Almost no bright pixels = no subtitle right now. Only clear after a
+    // sustained gap so brief dips between lines don't make the English flicker.
+    if (fp.bright < 12) {
       if (++emptyTicks >= 6 && sentHash !== "EMPTY") {
         sentHash = "EMPTY";
         showCover("", rect);
@@ -410,8 +423,20 @@
     const box = document.createElement("div");
     box.id = "__subtrans_selbox";
     layer.appendChild(box);
+    // Show where the box currently sits, so you can see / adjust it.
+    if (state.ocrRegion) {
+      const cur = regionRect();
+      const guide = document.createElement("div");
+      guide.id = "__subtrans_curbox";
+      guide.style.left = cur.left + "px";
+      guide.style.top = cur.top + "px";
+      guide.style.width = cur.width + "px";
+      guide.style.height = cur.height + "px";
+      guide.textContent = "current box";
+      layer.appendChild(guide);
+    }
     document.documentElement.appendChild(layer);
-    toast("Drag a box over the Hebrew subtitles. Esc to cancel.");
+    toast("Drag a new box over the Hebrew. Esc = cancel · Delete = erase box.");
 
     let sx = 0, sy = 0, dragging = false;
     const place = (x, y) => {
@@ -460,6 +485,10 @@
       if (e.key === "Escape") {
         cleanup();
         toast("Cancelled.");
+      } else if (e.key === "Delete" || e.key === "Backspace") {
+        cleanup();
+        chrome.storage.sync.set({ ocrRegion: null });
+        toast("Subtitle box erased.");
       }
     };
     function cleanup() {
@@ -490,7 +519,15 @@
   chrome.runtime.onMessage.addListener((msg) => {
     if (msg.type === "startTeaching") startTeaching();
     if (msg.type === "startRegionSelect" && isTop) startRegionSelect();
-    if (msg.type === "clearSelector") chrome.storage.sync.set({ selector: null, ocrRegion: null });
+    if (msg.type === "clearSelector") {
+      chrome.storage.sync.set({ selector: null, ocrRegion: null });
+      if (overlayEl) {
+        overlayEl.style.display = "none";
+        overlayEl.innerHTML = "";
+      }
+      sentHash = "";
+      toast("Subtitle box erased.");
+    }
   });
 
   loadSettings();
