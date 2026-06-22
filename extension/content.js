@@ -178,6 +178,7 @@
   let emptyTicks = 0;
   let tainted = false; // set if the video frame can't be read into a canvas
   let selecting = false; // true while drawing the subtitle box
+  let inFlight = false; // one OCR request at a time, so we never fall behind
 
   // Region is stored as fractions of the VIDEO element, so it tracks the video
   // at any size — including when you switch to fullscreen.
@@ -283,9 +284,10 @@
       return;
     }
     emptyTicks = 0;
-    // A new, settled line (stable one tick) we haven't read yet. The previous
-    // English stays on screen until the new translation arrives — no blanking.
-    if (fp.hash === prevHash && fp.hash !== sentHash) {
+    // A new, settled line we haven't read yet — but only if no request is in
+    // flight, so a backlog can never build up and drift sentences behind. When
+    // the in-flight one returns, the next tick picks up whatever is current now.
+    if (fp.hash === prevHash && fp.hash !== sentHash && !inFlight) {
       sentHash = fp.hash;
       sendOcr(canvas.toDataURL("image/png"), rect);
     }
@@ -293,9 +295,16 @@
   }
 
   function sendOcr(dataUrl, rect) {
+    inFlight = true;
+    let done = false;
+    const clear = () => { done = true; inFlight = false; };
+    const safety = setTimeout(clear, 3500); // don't get stuck if a request hangs
     chrome.runtime.sendMessage(
       { type: "ocrTranslate", image: dataUrl, source: state.source, target: state.target, lang: state.lang, backendUrl: state.backendUrl },
       (resp) => {
+        clearTimeout(safety);
+        if (done) return; // safety already fired; this result is stale
+        clear();
         if (chrome.runtime.lastError || !resp) return;
         if (!resp.ok) return toast("Translation server error. Check the backend URL.");
         showCover(resp.translation || "", rect);
@@ -365,6 +374,7 @@
     }
     prevHash = sentHash = "";
     emptyTicks = 0;
+    inFlight = false;
     lastText = "";
 
     if (!state.enabled) {

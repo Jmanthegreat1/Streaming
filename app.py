@@ -46,6 +46,13 @@ def _translate_one(text, source, target):
     return GoogleTranslator(source=source, target=target).translate(text) or text
 
 
+def _fix_leading_punct(s):
+    """RTL artifact: sentence punctuation (? ! .) lands at the START. Move a
+    leading run to the end — English never legitimately starts with these."""
+    m = re.match(r"^\s*([?!.]+)\s*(.+)$", s)
+    return (m.group(2).rstrip() + m.group(1)) if m else s
+
+
 def translate_text(text, source, target):
     text = (text or "").strip()
     if not text:
@@ -125,14 +132,11 @@ def ocr_translate():
     text = re.sub(r"(?:^|\s)[.\-–—]{1,2}(?=\s|$)", " ", text)
     text = " ".join(text.split()).strip(" |_~`^*¦•·=-–—")
 
-    # Hebrew/Arabic are RTL: sentence-final punctuation (? ! .) is read off the
-    # left and lands at the START of the string — move a leading run to the end.
-    if lang.startswith(("heb", "ar", "iw", "fa")):
-        m = re.match(r"^([?!.]+)\s*(.+)$", text)
-        if m:
-            text = m.group(2).rstrip() + m.group(1)
-
-    return jsonify({"text": text, "translation": translate_text(text, source, target)})
+    # Fix the RTL leading-punctuation artifact on the recognized text AND on the
+    # final English (belt and suspenders — the user sees the translation).
+    text = _fix_leading_punct(text)
+    translation = _fix_leading_punct(translate_text(text, source, target))
+    return jsonify({"text": text, "translation": translation})
 
 
 if __name__ == "__main__":
