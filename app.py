@@ -23,7 +23,7 @@ from io import BytesIO
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from deep_translator import GoogleTranslator
-from PIL import Image
+from PIL import Image, ImageOps
 import pytesseract
 
 app = Flask(__name__)
@@ -97,14 +97,17 @@ def ocr_translate():
     except (binascii.Error, ValueError, OSError):
         return jsonify({"error": "Could not decode the image."}), 400
 
-    # Grayscale + upscale helps Tesseract on small, compressed subtitle text.
-    img = img.convert("L")
-    if img.width < 1000:
-        scale = 2
-        img = img.resize((img.width * scale, img.height * scale))
+    # Grayscale, then invert: subtitles are light-on-dark, and Tesseract expects
+    # dark-on-light. Pre-inverting lets us skip its slow auto-invert second pass.
+    img = ImageOps.invert(img.convert("L"))
+    if img.width < 900:
+        factor = 900 / img.width
+        img = img.resize((round(img.width * factor), round(img.height * factor)))
 
+    # Single fast LSTM pass (image is already the right polarity).
+    config = f"--oem 1 --psm {psm} -c tessedit_do_invert=0"
     try:
-        text = pytesseract.image_to_string(img, lang=lang, config=f"--psm {psm}").strip()
+        text = pytesseract.image_to_string(img, lang=lang, config=config).strip()
     except pytesseract.TesseractError as e:
         return jsonify({"error": "OCR failed: " + str(e)}), 500
 

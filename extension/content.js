@@ -169,6 +169,7 @@
   let ocrTimer = null;
   let prevHash = "";
   let sentHash = "";
+  let emptyTicks = 0;
   let tainted = false; // set if the video frame can't be read into a canvas
 
   // Region is stored as fractions of the VIDEO element, so it tracks the video
@@ -251,16 +252,19 @@
 
   function processCrop(canvas, rect) {
     const fp = fingerprint(canvas);
-    // Near-uniform = no subtitle on screen right now.
-    if (fp.variance < 28) {
-      if (sentHash !== "EMPTY") {
+    // Near-uniform = no subtitle right now. Only clear after a sustained gap so
+    // brief dips between lines (or dark frames) don't make the English flicker.
+    if (fp.variance < 24) {
+      if (++emptyTicks >= 6 && sentHash !== "EMPTY") {
         sentHash = "EMPTY";
         showCover("", rect);
       }
       prevHash = fp.hash;
       return;
     }
-    // OCR only once the region is stable for two ticks and not already read.
+    emptyTicks = 0;
+    // A new, settled line (stable one tick) we haven't read yet. The previous
+    // English stays on screen until the new translation arrives — no blanking.
     if (fp.hash === prevHash && fp.hash !== sentHash) {
       sentHash = fp.hash;
       sendOcr(canvas.toDataURL("image/png"), rect);
@@ -317,7 +321,11 @@
 
   function scheduleOcr() {
     clearTimeout(ocrTimer);
-    if (isTop && state.enabled && state.mode === "ocr") ocrTimer = setTimeout(ocrTick, 450);
+    // Fast path (reading the video frame) is cheap and local, so poll often.
+    // Screenshot fallback is rate-limited by Chrome (~2/s), so ease off there.
+    if (isTop && state.enabled && state.mode === "ocr") {
+      ocrTimer = setTimeout(ocrTick, tainted ? 550 : 280);
+    }
   }
 
   // ==========================================================================
@@ -335,6 +343,7 @@
       domObserver = null;
     }
     prevHash = sentHash = "";
+    emptyTicks = 0;
     lastText = "";
 
     if (!state.enabled) {
