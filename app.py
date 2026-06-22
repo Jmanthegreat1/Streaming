@@ -1,34 +1,58 @@
 """
 Subtitle translation API — the backend the browser extension calls.
 
-Exposes POST /translate  { "texts": [...], "source": "auto", "target": "en" }
-returning          { "translations": [...] }
+Endpoints
+---------
+POST /translate       { "texts": [...], "source": "auto", "target": "en" }
+                   -> { "translations": [...] }
 
-Designed to run on Render (gunicorn app:app) but also runs locally:
-    pip install -r requirements.txt
-    python app.py
+POST /ocr-translate   { "image": "data:image/png;base64,...", "source": "auto",
+                        "target": "en", "lang": "heb" }
+                   -> { "text": "<recognized>", "translation": "<translated>" }
+
+Runs on Render via the bundled Dockerfile (which installs Tesseract + Hebrew).
+Locally, point it at a Tesseract install with TESSERACT_CMD / TESSDATA_PREFIX.
 """
 
 import os
+import base64
+import binascii
 from functools import lru_cache
+from io import BytesIO
 
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from deep_translator import GoogleTranslator
+from PIL import Image
+import pytesseract
 
 app = Flask(__name__)
-# The extension runs on arbitrary sites (kan.org.il, etc.), so allow any origin.
-CORS(app)
+CORS(app)  # the extension runs on arbitrary sites, so allow any origin
+
+# Allow pointing at a local Tesseract during development (on Render it's on PATH).
+_cmd = os.environ.get("TESSERACT_CMD")
+if _cmd:
+    pytesseract.pytesseract.tesseract_cmd = _cmd
 
 
 @lru_cache(maxsize=10000)
 def _translate_one(text, source, target):
-    """Translate a single line. Cached so repeated subtitle lines are instant.
+    """Translate one line. Cached so repeated subtitle lines are instant.
 
-    A fresh GoogleTranslator per call on purpose — the object isn't thread-safe,
-    and gunicorn may serve requests concurrently.
+    A fresh GoogleTranslator per call on purpose — it isn't thread-safe and
+    gunicorn may serve requests concurrently.
     """
     return GoogleTranslator(source=source, target=target).translate(text) or text
+
+
+def translate_text(text, source, target):
+    text = (text or "").strip()
+    if not text:
+        return ""
+    try:
+        return _translate_one(text, source, target)
+    except Exception:
+        return text
 
 
 @app.route("/")
@@ -39,27 +63,54 @@ def health():
 @app.route("/translate", methods=["POST"])
 def translate():
     data = request.get_json(silent=True) or {}
-
     texts = data.get("texts")
     if texts is None:
         single = data.get("text")
         texts = [single] if single is not None else []
+    source = data.get("source") or "auto"
+    target = data.get("target") or "en"
+    return jsonify({"translations": [translate_text(t, source, target) for t in texts]})
+
+
+def _decode_image(data_url):
+    """Accept a data: URL or a bare base64 string and return a PIL image."""
+    if "," in data_url and data_url.strip().startswith("data:"):
+        data_url = data_url.split(",", 1)[1]
+    raw = base64.b64decode(data_url)
+    return Image.open(BytesIO(raw))
+
+
+@app.route("/ocr-translate", methods=["POST"])
+def ocr_translate():
+    data = request.get_json(silent=True) or {}
+    image = data.get("image")
+    if not image:
+        return jsonify({"error": "No image provided."}), 400
 
     source = data.get("source") or "auto"
     target = data.get("target") or "en"
+    lang = data.get("lang") or "heb"
+    psm = str(data.get("psm") or 6)
 
-    results = []
-    for raw in texts:
-        line = (raw or "").strip()
-        if not line:
-            results.append("")
-            continue
-        try:
-            results.append(_translate_one(line, source, target))
-        except Exception:
-            results.append(line)  # never fail a request over one bad line
+    try:
+        img = _decode_image(image)
+    except (binascii.Error, ValueError, OSError):
+        return jsonify({"error": "Could not decode the image."}), 400
 
-    return jsonify({"translations": results})
+    # Grayscale + upscale helps Tesseract on small, compressed subtitle text.
+    img = img.convert("L")
+    if img.width < 1000:
+        scale = 2
+        img = img.resize((img.width * scale, img.height * scale))
+
+    try:
+        text = pytesseract.image_to_string(img, lang=lang, config=f"--psm {psm}").strip()
+    except pytesseract.TesseractError as e:
+        return jsonify({"error": "OCR failed: " + str(e)}), 500
+
+    # Collapse the line breaks Tesseract adds between wrapped subtitle lines.
+    text = " ".join(text.split())
+    return jsonify({"text": text, "translation": translate_text(text, source, target)})
 
 
 if __name__ == "__main__":

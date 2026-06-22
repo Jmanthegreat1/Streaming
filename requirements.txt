@@ -2,3 +2,5 @@ Flask>=3.0
 flask-cors>=4.0
 deep-translator>=1.11.4
 gunicorn>=21.2
+pytesseract>=0.3.10
+Pillow>=10.0

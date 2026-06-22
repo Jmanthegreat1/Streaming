@@ -1,8 +1,7 @@
 services:
   - type: web
     name: subtitle-translate
-    runtime: python
+    runtime: docker
     plan: free
-    buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn app:app
+    dockerfilePath: ./Dockerfile
     autoDeploy: true
