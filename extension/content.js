@@ -286,10 +286,10 @@
       return;
     }
     emptyTicks = 0;
-    // A new, settled line we haven't read yet — but only if no request is in
-    // flight, so a backlog can never build up and drift sentences behind. When
-    // the in-flight one returns, the next tick picks up whatever is current now.
-    if (fp.hash === prevHash && fp.hash !== sentHash && !inFlight) {
+    // Fire as soon as a new line is bright enough — don't wait an extra tick.
+    // Only one request in flight at a time, so no backlog can build up; when it
+    // returns, the next tick picks up whatever line is current then.
+    if (fp.hash !== sentHash && !inFlight) {
       sentHash = fp.hash;
       sendOcr(canvas, rect);
     }
