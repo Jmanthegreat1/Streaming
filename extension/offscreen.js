@@ -3,7 +3,7 @@
 // parallel instead of one-at-a-time. This stops lines getting skipped when they
 // change faster than a single OCR pass takes.
 
-const POOL = Math.min(3, Math.max(2, (navigator.hardwareConcurrency || 4) - 1));
+const POOL = Math.min(6, Math.max(2, (navigator.hardwareConcurrency || 4) - 1));
 let schedulerPromise = null;
 
 function makeWorker() {

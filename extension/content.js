@@ -89,9 +89,6 @@
       el.innerHTML = "";
       return;
     }
-    // Tiny floor so a just-arrived short line flashes; otherwise the English
-    // tracks the Hebrew and clears when the box empties.
-    displayUntil = Date.now() + 400;
     // The band hugs the text and wraps long sentences into stacked lines,
     // centered in the highlighted area. Font is a steady fraction of the screen.
     const fontPx = Math.max(15, Math.min(Math.round(window.innerHeight * 0.038), 38));
@@ -112,6 +109,22 @@
     d.textContent = text;
     d.style.fontSize = fontPx + "px";
     el.appendChild(d);
+  }
+
+  // Show queued translations one at a time, in order, each for a readable beat.
+  // This keeps every read line (parallel OCR finishes out of order) without
+  // letting it drift more than a few lines behind (oldest are dropped).
+  function pumpQueue() {
+    if (queueBusy || !queue.length) return;
+    const item = queue.shift();
+    queueBusy = true;
+    showCover(item.text, regionRect());
+    const dur = Math.min(2200, Math.max(800, item.text.length * 50));
+    clearTimeout(queueTimer);
+    queueTimer = setTimeout(() => {
+      queueBusy = false;
+      pumpQueue();
+    }, dur);
   }
 
   document.addEventListener("fullscreenchange", () => {
@@ -182,13 +195,14 @@
   let sentHash = "";
   let emptyTicks = 0;
   let present = false; // is Hebrew currently on screen in the box?
-  let displayUntil = 0; // keep a line up at least this long (readable)
   let tainted = false; // set if the video frame can't be read into a canvas
   let selecting = false; // true while drawing the subtitle box
   let inflight = 0; // OCR requests currently in flight (pooled across workers)
-  let seq = 0; // line counter, so results display in order
-  let shownSeq = -1; // newest line already shown
-  const OCR_CONCURRENCY = 3; // read up to this many lines at once
+  let seq = 0; // line counter, to display results in order
+  let queue = []; // translated lines waiting to be shown, in order
+  let queueBusy = false; // a line is currently showing for its minimum time
+  let queueTimer = null;
+  const OCR_CONCURRENCY = 6; // read up to this many lines at once (uses spare cores)
 
   // Region is stored as fractions of the VIDEO element, so it tracks the video
   // at any size — including when you switch to fullscreen.
@@ -288,8 +302,9 @@
     // disappears together with the Hebrew.
     if (fp.bright < 12) {
       present = false;
-      // Clear once the box is empty AND the line has been up long enough to read.
-      if (++emptyTicks >= 2 && sentHash !== "EMPTY" && Date.now() >= displayUntil) {
+      // Clear when the Hebrew's been gone a moment AND the queue is drained, so
+      // we don't cut off lines still waiting to be shown.
+      if (++emptyTicks >= 3 && !queue.length && !queueBusy && sentHash !== "EMPTY") {
         sentHash = "EMPTY";
         showCover("", rect);
       }
@@ -331,14 +346,18 @@
           toast(local ? "On-device OCR error (see console)" : "Server error. Check the backend URL.");
           return;
         }
-        if (mySeq <= shownSeq) return; // a newer line is already shown — drop this stale result
-        shownSeq = mySeq;
         console.log(
           "[SubTrans] " + (local ? "on-device" : "server") + " " +
           Math.round(performance.now() - t0) + "ms" +
           (tainted ? " · screenshot capture" : " · video read")
         );
-        showCover(resp.translation || "", regionRect());
+        const tr = resp.translation || "";
+        if (tr) {
+          queue.push({ seq: mySeq, text: tr });
+          queue.sort((a, b) => a.seq - b.seq);
+          if (queue.length > 3) queue.splice(0, queue.length - 3); // cap how far behind it runs
+          pumpQueue();
+        }
       }
     );
   }
@@ -410,7 +429,9 @@
     present = false;
     inflight = 0;
     seq = 0;
-    shownSeq = -1;
+    queue = [];
+    queueBusy = false;
+    clearTimeout(queueTimer);
     lastText = "";
 
     if (!state.enabled) {
