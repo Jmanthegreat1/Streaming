@@ -153,20 +153,20 @@ def ocr_translate():
 
     text = " ".join(" ".join(ln.split()) for ln in raw.splitlines() if ln.strip())
 
-    # Drop OCR noise: junk arrows, isolated symbol tokens, dash/dot runs.
-    text = re.sub(r"[<>]", " ", text)
-    text = re.sub(r"(?:^|\s)[|_~`^*¦•·=]+(?=\s|$)", " ", text)
+    # Keep only letters / digits / basic punctuation — drops junk symbols wholesale.
+    text = re.sub(r"[^A-Za-zא-ת0-9\s.,?!'\"%:;\-]", " ", text)
     text = re.sub(r"(?:^|\s)[-–—.]{2,}(?=\s|$)", " ", text)  # runs like --- or ..
-    text = re.sub(r"(?:^|\s)[.]{1,2}(?=\s|$)", " ", text)
-    text = " ".join(text.split()).strip(" |_~`^*¦•·=")
+    text = re.sub(r"(?:^|\s)\.(?=\s|$)", " ", text)  # standalone dot
+    text = " ".join(text.split())
     text = _reorder_punct(text)
 
-    # Guard against OCR noise (specks, white shirts, clocks/numbers) becoming
-    # random words: need a couple of Hebrew letters AND Hebrew must dominate.
+    # A real subtitle has an actual Hebrew WORD (3+ letters), or several Hebrew
+    # letters, and Hebrew dominates. Rejects scene-noise junk like "ל 8 מ".
     if lang.startswith(("heb", "iw")):
         heb = len(re.findall(r"[א-ת]", text))
         alnum = len(re.findall(r"[א-ת0-9A-Za-z]", text))
-        if heb < 2 or heb < alnum * 0.6:
+        has_word = bool(re.search(r"[א-ת]{3,}", text))
+        if (not has_word and heb < 4) or heb < alnum * 0.55:
             return jsonify({"text": "", "translation": ""})
 
     translation = _reorder_punct(translate_text(text, source, target))

@@ -67,19 +67,19 @@ function reorderPunct(s) {
 function cleanHebrew(raw) {
   if (!raw) return "";
   let text = raw.split(/\r?\n/).map((l) => l.replace(/\s+/g, " ").trim()).filter(Boolean).join(" ");
-  text = text.replace(/[<>]/g, " "); // junk arrows from fade frames
-  text = text.replace(/(^|\s)[|_~`^*¦•·=]+(?=\s|$)/g, " ");
+  // Keep only letters / digits / basic punctuation — drops junk symbols wholesale.
+  text = text.replace(/[^A-Za-zא-ת0-9\s.,?!'"%:;\-]/g, " ");
   text = text.replace(/(^|\s)[-–—.]{2,}(?=\s|$)/g, " "); // runs like --- or ..
-  text = text.replace(/(^|\s)[.]{1,2}(?=\s|$)/g, " ");
-  text = text.replace(/\s+/g, " ").trim().replace(/^[|_~`^*¦•·=]+|[|_~`^*¦•·=]+$/g, "").trim();
-  // Clean the Hebrew punctuation BEFORE translating, so Google gets the question
-  // mark in the right place and doesn't carry the RTL scramble into English.
+  text = text.replace(/(^|\s)\.(?=\s|$)/g, " "); // standalone dot
+  text = text.replace(/\s+/g, " ").trim();
+  // Fix Hebrew punctuation before translating so Google gets it right.
   text = reorderPunct(text);
-  // Reject noise (white shirt stripes, clocks, numbers): need a couple of Hebrew
-  // letters AND Hebrew must dominate over digits/latin, or it's not a subtitle.
+  // A real subtitle has an actual Hebrew WORD (3+ letters in a row), or several
+  // Hebrew letters, and Hebrew dominates. Rejects "ל 8 מ"-style scene-noise junk.
   const heb = (text.match(/[א-ת]/g) || []).length;
   const alnum = (text.match(/[א-ת0-9A-Za-z]/g) || []).length;
-  return heb < 2 || heb < alnum * 0.6 ? "" : text;
+  const hasWord = /[א-ת]{3,}/.test(text);
+  return (!hasWord && heb < 4) || heb < alnum * 0.55 ? "" : text;
 }
 
 // ---------- offscreen document (hosts Tesseract) ----------
