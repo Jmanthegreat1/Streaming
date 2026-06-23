@@ -178,6 +178,7 @@
   let prevHash = "";
   let sentHash = "";
   let emptyTicks = 0;
+  let present = false; // is Hebrew currently on screen in the box?
   let tainted = false; // set if the video frame can't be read into a canvas
   let selecting = false; // true while drawing the subtitle box
   let inFlight = false; // one OCR request at a time, so we never fall behind
@@ -275,16 +276,19 @@
 
   function processCrop(canvas, rect) {
     const fp = fingerprint(canvas);
-    // Almost no bright pixels = no subtitle right now. Only clear after a
-    // sustained gap so brief dips between lines don't make the English flicker.
+    // Almost no bright pixels = no Hebrew on screen. Clear the English quickly
+    // (after a couple of ticks, just enough to ignore a one-frame dip) so it
+    // disappears together with the Hebrew.
     if (fp.bright < 12) {
-      if (++emptyTicks >= 6 && sentHash !== "EMPTY") {
+      present = false;
+      if (++emptyTicks >= 2 && sentHash !== "EMPTY") {
         sentHash = "EMPTY";
         showCover("", rect);
       }
       prevHash = fp.hash;
       return;
     }
+    present = true;
     emptyTicks = 0;
     // Fire as soon as a new line is bright enough — don't wait an extra tick.
     // Only one request in flight at a time, so no backlog can build up; when it
@@ -320,6 +324,9 @@
           toast(local ? "On-device OCR error (see console)" : "Server error. Check the backend URL.");
           return;
         }
+        // If the Hebrew already vanished while we were translating, don't show
+        // a stale line — keep it in sync with what's actually on screen.
+        if (!present) { showCover("", rect); return; }
         showCover(resp.translation || "", rect);
       }
     );
@@ -389,6 +396,7 @@
     }
     prevHash = sentHash = "";
     emptyTicks = 0;
+    present = false;
     inFlight = false;
     lastText = "";
 
