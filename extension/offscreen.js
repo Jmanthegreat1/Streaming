@@ -42,27 +42,53 @@ async function recycleIfNeeded() {
   }
 }
 
-// Keep only near-white pixels (the subtitle text) as black-on-white.
+// Keep only near-white pixels (the subtitle text) as black-on-white, AND crop to
+// just the text's bounding box — so a big highlighted area doesn't make Tesseract
+// scan a huge mostly-empty image. Big speed win when the box is large.
 function binarize(dataUrl) {
   return new Promise((resolve, reject) => {
     const img = new Image();
     img.onload = () => {
-      // Cap the OCR image (~720x200): a big highlighted area was huge and slow.
-      const scale = Math.min(720 / img.width, 200 / img.height, 2);
+      const work = img.width > 1000 ? 1000 / img.width : 1; // bound the scan width
+      const w = Math.max(1, Math.round(img.width * work));
+      const h = Math.max(1, Math.round(img.height * work));
       const c = document.createElement("canvas");
-      c.width = Math.max(1, Math.round(img.width * scale));
-      c.height = Math.max(1, Math.round(img.height * scale));
+      c.width = w;
+      c.height = h;
       const ctx = c.getContext("2d");
-      ctx.drawImage(img, 0, 0, c.width, c.height);
-      const im = ctx.getImageData(0, 0, c.width, c.height);
+      ctx.drawImage(img, 0, 0, w, h);
+      const im = ctx.getImageData(0, 0, w, h);
       const d = im.data;
-      for (let i = 0; i < d.length; i += 4) {
-        const v = d[i] >= 215 && d[i + 1] >= 215 && d[i + 2] >= 215 ? 0 : 255;
-        d[i] = d[i + 1] = d[i + 2] = v;
-        d[i + 3] = 255;
+      let minX = w, minY = h, maxX = -1, maxY = -1;
+      for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+          const i = (y * w + x) * 4;
+          const isText = d[i] >= 215 && d[i + 1] >= 215 && d[i + 2] >= 215;
+          const v = isText ? 0 : 255;
+          d[i] = d[i + 1] = d[i + 2] = v;
+          d[i + 3] = 255;
+          if (isText) {
+            if (x < minX) minX = x;
+            if (x > maxX) maxX = x;
+            if (y < minY) minY = y;
+            if (y > maxY) maxY = y;
+          }
+        }
       }
       ctx.putImageData(im, 0, 0);
-      resolve(c);
+      if (maxX < 0) return resolve(c); // no text found; let OCR return empty
+
+      const pad = 6;
+      const bx = Math.max(0, minX - pad), by = Math.max(0, minY - pad);
+      const bw = Math.min(w - bx, maxX - minX + 1 + pad * 2);
+      const bh = Math.min(h - by, maxY - minY + 1 + pad * 2);
+      // Scale the tight text crop to a comfortable OCR size (cap ~760x200).
+      const s = Math.min(760 / bw, 200 / bh, 3);
+      const oc = document.createElement("canvas");
+      oc.width = Math.max(1, Math.round(bw * s));
+      oc.height = Math.max(1, Math.round(bh * s));
+      oc.getContext("2d").drawImage(c, bx, by, bw, bh, 0, 0, oc.width, oc.height);
+      resolve(oc);
     };
     img.onerror = () => reject(new Error("image decode failed"));
     img.src = dataUrl;
