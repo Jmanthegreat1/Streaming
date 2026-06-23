@@ -1,55 +1,49 @@
-// Runs in the offscreen document (an extension page), where we're allowed to
-// spin up the Tesseract web worker + WASM. Keeps one warm Hebrew worker, refuses
-// to stack recognitions (prevents a growing backlog), and recycles periodically
-// so it doesn't slow down over a long session.
+// Runs in the offscreen document. Hosts a POOL of Tesseract workers (one per
+// spare CPU core) via a scheduler, so several subtitle lines can be read in
+// parallel instead of one-at-a-time. This stops lines getting skipped when they
+// change faster than a single OCR pass takes.
 
-let workerPromise = null;
-let recognizeCount = 0;
-let busy = false;
+const POOL = Math.min(3, Math.max(2, (navigator.hardwareConcurrency || 4) - 1));
+let schedulerPromise = null;
 
-function createWorker() {
+function makeWorker() {
   return Tesseract.createWorker("heb", 1, {
     workerPath: chrome.runtime.getURL("tesseract/worker.min.js"),
     corePath: chrome.runtime.getURL("tesseract/tesseract-core-simd.wasm.js"),
     langPath: chrome.runtime.getURL("tesseract/"),
     workerBlobURL: false,
     gzip: true,
-  }).then(async (worker) => {
-    await worker.setParameters({ tessedit_pageseg_mode: "6" });
-    return worker;
+  }).then(async (w) => {
+    await w.setParameters({ tessedit_pageseg_mode: "6" });
+    return w;
   });
 }
 
-function getWorker() {
-  if (!workerPromise) {
-    workerPromise = createWorker().catch((e) => {
-      workerPromise = null; // allow retry
+function getScheduler() {
+  if (!schedulerPromise) {
+    schedulerPromise = (async () => {
+      const scheduler = Tesseract.createScheduler();
+      const workers = await Promise.all(Array.from({ length: POOL }, makeWorker));
+      workers.forEach((w) => scheduler.addWorker(w));
+      return scheduler;
+    })().catch((e) => {
+      schedulerPromise = null; // allow retry
       throw e;
     });
   }
-  return workerPromise;
+  return schedulerPromise;
 }
 
-// Recreate the worker every so often to release accumulated memory.
-async function recycleIfNeeded() {
-  if (recognizeCount >= 150 && workerPromise) {
-    const w = await workerPromise.catch(() => null);
-    workerPromise = null;
-    recognizeCount = 0;
-    if (w) {
-      try { await w.terminate(); } catch (e) { /* ignore */ }
-    }
-  }
-}
+// Start loading the pool as soon as this document exists (content prewarms us).
+getScheduler().catch(() => {});
 
 // Keep only near-white pixels (the subtitle text) as black-on-white, AND crop to
-// just the text's bounding box — so a big highlighted area doesn't make Tesseract
-// scan a huge mostly-empty image. Big speed win when the box is large.
+// just the text's bounding box so a big highlighted area isn't a huge image.
 function binarize(dataUrl) {
   return new Promise((resolve, reject) => {
     const img = new Image();
     img.onload = () => {
-      const work = img.width > 1000 ? 1000 / img.width : 1; // bound the scan width
+      const work = img.width > 1000 ? 1000 / img.width : 1;
       const w = Math.max(1, Math.round(img.width * work));
       const h = Math.max(1, Math.round(img.height * work));
       const c = document.createElement("canvas");
@@ -76,13 +70,12 @@ function binarize(dataUrl) {
         }
       }
       ctx.putImageData(im, 0, 0);
-      if (maxX < 0) return resolve(c); // no text found; let OCR return empty
+      if (maxX < 0) return resolve(c);
 
       const pad = 6;
       const bx = Math.max(0, minX - pad), by = Math.max(0, minY - pad);
       const bw = Math.min(w - bx, maxX - minX + 1 + pad * 2);
       const bh = Math.min(h - by, maxY - minY + 1 + pad * 2);
-      // Scale the tight text crop to a comfortable OCR size (cap ~760x200).
       const s = Math.min(760 / bw, 200 / bh, 3);
       const oc = document.createElement("canvas");
       oc.width = Math.max(1, Math.round(bw * s));
@@ -95,31 +88,18 @@ function binarize(dataUrl) {
   });
 }
 
-// Start loading the model as soon as this document exists, so it's warm by the
-// time the first subtitle arrives (the content script prewarms us on enable).
-getWorker().catch(() => {});
-
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.target !== "offscreen" || msg.type !== "ocr") return;
-  if (busy) {
-    sendResponse({ ok: false, busy: true }); // don't stack work — skip this one
-    return true;
-  }
-  busy = true;
   (async () => {
     try {
-      await recycleIfNeeded();
-      const worker = await getWorker();
+      const scheduler = await getScheduler();
       const canvas = await binarize(msg.image);
-      const { data } = await worker.recognize(canvas, {}, {
+      const { data } = await scheduler.addJob("recognize", canvas, {}, {
         text: true, blocks: false, hocr: false, tsv: false, box: false, unlv: false, osd: false,
       });
-      recognizeCount++;
       sendResponse({ ok: true, text: data.text || "" });
     } catch (e) {
       sendResponse({ ok: false, error: String(e && e.message ? e.message : e) });
-    } finally {
-      busy = false;
     }
   })();
   return true;

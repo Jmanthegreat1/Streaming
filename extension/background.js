@@ -141,10 +141,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       try {
         await ensureOffscreen();
         const ocr = await chrome.runtime.sendMessage({ target: "offscreen", type: "ocr", image: msg.image });
-        if (ocr && ocr.busy) {
-          sendResponse({ ok: true, skip: true }); // worker still busy — keep current line
-          return;
-        }
         if (!ocr || !ocr.ok) throw new Error((ocr && ocr.error) || "on-device OCR failed");
         const text = cleanHebrew(ocr.text);
         if (!text) {

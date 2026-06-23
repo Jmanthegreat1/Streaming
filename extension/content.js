@@ -185,7 +185,10 @@
   let displayUntil = 0; // keep a line up at least this long (readable)
   let tainted = false; // set if the video frame can't be read into a canvas
   let selecting = false; // true while drawing the subtitle box
-  let inFlight = false; // one OCR request at a time, so we never fall behind
+  let inflight = 0; // OCR requests currently in flight (pooled across workers)
+  let seq = 0; // line counter, so results display in order
+  let shownSeq = -1; // newest line already shown
+  const OCR_CONCURRENCY = 3; // read up to this many lines at once
 
   // Region is stored as fractions of the VIDEO element, so it tracks the video
   // at any size — including when you switch to fullscreen.
@@ -295,10 +298,9 @@
     }
     present = true;
     emptyTicks = 0;
-    // Fire as soon as a new line is bright enough — don't wait an extra tick.
-    // Only one request in flight at a time, so no backlog can build up; when it
-    // returns, the next tick picks up whatever line is current then.
-    if (fp.hash !== sentHash && !inFlight) {
+    // Fire as soon as a new line is bright enough. Up to OCR_CONCURRENCY reads
+    // run in parallel, so fast-changing lines get read instead of skipped.
+    if (fp.hash !== sentHash && inflight < OCR_CONCURRENCY) {
       sentHash = fp.hash;
       sendOcr(canvas, rect);
     }
@@ -308,13 +310,13 @@
   function sendOcr(canvas, rect) {
     const local = state.engine === "local";
     const image = canvas.toDataURL("image/png");
+    const mySeq = ++seq;
     const t0 = performance.now();
-    inFlight = true;
-    let done = false;
-    const clear = () => { done = true; inFlight = false; };
-    // The first on-device call loads the model (can take several seconds); after
-    // that it's fast and warm. Server calls should never take this long.
-    const safety = setTimeout(clear, local ? 15000 : 3500);
+    inflight++;
+    let settled = false;
+    const done = () => { if (!settled) { settled = true; inflight = Math.max(0, inflight - 1); } };
+    // First on-device call loads the model (a few seconds); then it's fast.
+    const safety = setTimeout(done, local ? 15000 : 4000);
     chrome.runtime.sendMessage(
       {
         type: local ? "ocrLocal" : "ocrTranslate",
@@ -322,20 +324,20 @@
       },
       (resp) => {
         clearTimeout(safety);
-        if (done) return; // safety already fired; this result is stale
-        clear();
+        done();
         if (chrome.runtime.lastError || !resp) return;
-        if (resp.skip) { sentHash = ""; return; } // busy — keep screen, retry next tick
         if (!resp.ok) {
           toast(local ? "On-device OCR error (see console)" : "Server error. Check the backend URL.");
           return;
         }
+        if (mySeq <= shownSeq) return; // a newer line is already shown — drop this stale result
+        shownSeq = mySeq;
         console.log(
           "[SubTrans] " + (local ? "on-device" : "server") + " " +
           Math.round(performance.now() - t0) + "ms" +
           (tainted ? " · screenshot capture" : " · video read")
         );
-        showCover(resp.translation || "", rect);
+        showCover(resp.translation || "", regionRect());
       }
     );
   }
@@ -405,7 +407,9 @@
     prevHash = sentHash = "";
     emptyTicks = 0;
     present = false;
-    inFlight = false;
+    inflight = 0;
+    seq = 0;
+    shownSeq = -1;
     lastText = "";
 
     if (!state.enabled) {
