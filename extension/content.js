@@ -308,6 +308,7 @@
   function sendOcr(canvas, rect) {
     const local = state.engine === "local";
     const image = canvas.toDataURL("image/png");
+    const t0 = performance.now();
     inFlight = true;
     let done = false;
     const clear = () => { done = true; inFlight = false; };
@@ -329,6 +330,11 @@
           toast(local ? "On-device OCR error (see console)" : "Server error. Check the backend URL.");
           return;
         }
+        console.log(
+          "[SubTrans] " + (local ? "on-device" : "server") + " " +
+          Math.round(performance.now() - t0) + "ms" +
+          (tainted ? " · screenshot capture" : " · video read")
+        );
         showCover(resp.translation || "", rect);
       }
     );
