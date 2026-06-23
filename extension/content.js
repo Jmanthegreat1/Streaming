@@ -298,9 +298,10 @@
     }
     present = true;
     emptyTicks = 0;
-    // Fire as soon as a new line is bright enough. Up to OCR_CONCURRENCY reads
-    // run in parallel, so fast-changing lines get read instead of skipped.
-    if (fp.hash !== sentHash && inflight < OCR_CONCURRENCY) {
+    // Read a line only once it's settled (same for one tick) so we skip the
+    // fade/transition frames that produce "> --- ." junk and half-sentences.
+    // Up to OCR_CONCURRENCY reads still run in parallel, so lines aren't skipped.
+    if (fp.hash === prevHash && fp.hash !== sentHash && inflight < OCR_CONCURRENCY) {
       sentHash = fp.hash;
       sendOcr(canvas, rect);
     }

@@ -67,7 +67,9 @@ function reorderPunct(s) {
 function cleanHebrew(raw) {
   if (!raw) return "";
   let text = raw.split(/\r?\n/).map((l) => l.replace(/\s+/g, " ").trim()).filter(Boolean).join(" ");
+  text = text.replace(/[<>]/g, " "); // junk arrows from fade frames
   text = text.replace(/(^|\s)[|_~`^*¦•·=]+(?=\s|$)/g, " ");
+  text = text.replace(/(^|\s)[-–—.]{2,}(?=\s|$)/g, " "); // runs like --- or ..
   text = text.replace(/(^|\s)[.]{1,2}(?=\s|$)/g, " ");
   text = text.replace(/\s+/g, " ").trim().replace(/^[|_~`^*¦•·=]+|[|_~`^*¦•·=]+$/g, "").trim();
   // Clean the Hebrew punctuation BEFORE translating, so Google gets the question

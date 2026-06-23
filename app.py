@@ -153,8 +153,10 @@ def ocr_translate():
 
     text = " ".join(" ".join(ln.split()) for ln in raw.splitlines() if ln.strip())
 
-    # Drop OCR noise: isolated symbol tokens and stray symbols at the edges.
+    # Drop OCR noise: junk arrows, isolated symbol tokens, dash/dot runs.
+    text = re.sub(r"[<>]", " ", text)
     text = re.sub(r"(?:^|\s)[|_~`^*¦•·=]+(?=\s|$)", " ", text)
+    text = re.sub(r"(?:^|\s)[-–—.]{2,}(?=\s|$)", " ", text)  # runs like --- or ..
     text = re.sub(r"(?:^|\s)[.]{1,2}(?=\s|$)", " ", text)
     text = " ".join(text.split()).strip(" |_~`^*¦•·=")
     text = _reorder_punct(text)
