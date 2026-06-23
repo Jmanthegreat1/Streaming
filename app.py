@@ -47,11 +47,22 @@ def _translate_one(text, source, target):
 
 
 def _fix_leading_punct(s):
-    """RTL artifact: sentence punctuation (? ! .) lands at the START. Move a
-    leading run to the end — English never legitimately starts with these."""
+    """RTL artifact: a run of leading sentence punctuation (? ! .) belongs at the
+    END. Move it there without doubling up if the segment already ends with it."""
     s = re.sub(r"^\s*\.\s*(?=[-–—])", "", s)  # drop a stray period before a dialogue dash
-    m = re.match(r"^\s*([?!.]+)\s*(.+)$", s)
-    return (m.group(2).rstrip() + m.group(1)) if m else s
+    m = re.match(r"^\s*([?!.]+)\s*(.+?)\s*$", s)
+    if not m:
+        return s
+    return re.sub(r"[?!.]+$", "", m.group(2)) + m.group(1)
+
+
+def _reorder_punct(s):
+    """Fix punctuation across a whole line, handling each dialogue segment
+    (split on ' - ') separately so multi-speaker lines come out right."""
+    s = re.sub(r"^\s*\.\s*(?=[-–—])", "", s)  # stray period before a leading dash
+    parts = re.split(r"(\s*[-–—]\s+)", s)
+    out = [p if re.fullmatch(r"\s*[-–—]\s+", p or "") else _fix_leading_punct(p) for p in parts]
+    return "".join(out).strip()
 
 
 def translate_text(text, source, target):
@@ -145,7 +156,7 @@ def ocr_translate():
         if heb < 2 or heb < alnum * 0.6:
             return jsonify({"text": "", "translation": ""})
 
-    translation = _fix_leading_punct(translate_text(text, source, target))
+    translation = _reorder_punct(translate_text(text, source, target))
     return jsonify({"text": text, "translation": translation})
 
 

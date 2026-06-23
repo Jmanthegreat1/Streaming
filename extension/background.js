@@ -36,11 +36,24 @@ async function translateViaGoogle(texts, source, target) {
 }
 
 // ---------- Hebrew OCR text cleanup (mirrors the server) ----------
+// Move a run of leading sentence punctuation (. ? !) to the end of the segment
+// (the RTL artifact), without doubling up if it already ends with punctuation.
 function fixLeadingPunct(s) {
-  // Drop a stray leading period that sits right before a dialogue dash.
-  s = s.replace(/^\s*\.\s*(?=[-–—])/, "");
-  const m = /^\s*([?!.]+)\s*(.+)$/.exec(s);
-  return m ? m[2].replace(/\s+$/, "") + m[1] : s;
+  s = s.replace(/^\s*\.\s*(?=[-–—])/, ""); // stray period right before a dialogue dash
+  const m = /^\s*([?!.]+)\s*(.+?)\s*$/.exec(s);
+  if (!m) return s;
+  return m[2].replace(/[?!.]+$/, "") + m[1];
+}
+
+// Reorder punctuation across a whole line: handle each dialogue segment
+// (split on " - ") on its own, so multi-speaker lines come out right.
+function reorderPunct(s) {
+  s = s.replace(/^\s*\.\s*(?=[-–—])/, ""); // stray period before a leading dash
+  return s
+    .split(/(\s*[-–—]\s+)/)
+    .map((seg) => (/^\s*[-–—]\s+$/.test(seg) ? seg : fixLeadingPunct(seg)))
+    .join("")
+    .trim();
 }
 
 function cleanHebrew(raw) {
@@ -133,7 +146,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           return;
         }
         const translations = await translateViaGoogle([text], msg.source || "auto", msg.target || "en");
-        sendResponse({ ok: true, text, translation: fixLeadingPunct(translations[0] || "") });
+        sendResponse({ ok: true, text, translation: reorderPunct(translations[0] || "") });
       } catch (e) {
         console.warn("on-device OCR failed:", e); // visible in the service-worker console
         // Fall back to the server so subtitles still appear while we fix local.

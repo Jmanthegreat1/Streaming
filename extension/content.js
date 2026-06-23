@@ -89,15 +89,18 @@
       el.innerHTML = "";
       return;
     }
-    // The band hugs the text: it expands and shrinks with the sentence length,
-    // centered in the area you highlighted, and wraps within that width. Font is
-    // a steady fraction of the screen (like normal subtitles), not the box size.
+    // Keep the line up long enough to read (scaled to length), then it clears
+    // when the box empties or is replaced by the next line.
+    displayUntil = Date.now() + Math.min(5000, Math.max(1500, 1000 + text.length * 50));
+    // The band hugs the text and wraps long sentences into stacked lines,
+    // centered in the highlighted area. Font is a steady fraction of the screen.
     const fontPx = Math.max(15, Math.min(Math.round(window.innerHeight * 0.038), 38));
     el.style.display = "inline-block";
     el.style.left = rect.left + rect.width / 2 + "px";
     el.style.top = rect.top + rect.height / 2 + "px";
     el.style.transform = "translate(-50%, -50%)";
-    el.style.maxWidth = Math.round(rect.width) + "px";
+    // Cap width so long sentences stack into multiple rows, not one wide line.
+    el.style.maxWidth = Math.round(Math.min(rect.width, window.innerWidth * 0.72)) + "px";
     el.style.width = "auto";
     el.style.height = "auto";
     el.style.minHeight = "0";
@@ -179,6 +182,7 @@
   let sentHash = "";
   let emptyTicks = 0;
   let present = false; // is Hebrew currently on screen in the box?
+  let displayUntil = 0; // keep a line up at least this long (readable)
   let tainted = false; // set if the video frame can't be read into a canvas
   let selecting = false; // true while drawing the subtitle box
   let inFlight = false; // one OCR request at a time, so we never fall behind
@@ -281,7 +285,8 @@
     // disappears together with the Hebrew.
     if (fp.bright < 12) {
       present = false;
-      if (++emptyTicks >= 2 && sentHash !== "EMPTY") {
+      // Clear once the box is empty AND the line has been up long enough to read.
+      if (++emptyTicks >= 2 && sentHash !== "EMPTY" && Date.now() >= displayUntil) {
         sentHash = "EMPTY";
         showCover("", rect);
       }
@@ -324,9 +329,6 @@
           toast(local ? "On-device OCR error (see console)" : "Server error. Check the backend URL.");
           return;
         }
-        // If the Hebrew already vanished while we were translating, don't show
-        // a stale line — keep it in sync with what's actually on screen.
-        if (!present) { showCover("", rect); return; }
         showCover(resp.translation || "", rect);
       }
     );
