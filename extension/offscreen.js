@@ -63,7 +63,7 @@ function binarize(dataUrl) {
       for (let y = 0; y < h; y++) {
         for (let x = 0; x < w; x++) {
           const i = (y * w + x) * 4;
-          const isText = d[i] >= 215 && d[i + 1] >= 215 && d[i + 2] >= 215;
+          const isText = d[i] >= 200 && d[i + 1] >= 200 && d[i + 2] >= 200;
           const v = isText ? 0 : 255;
           d[i] = d[i + 1] = d[i + 2] = v;
           d[i + 3] = 255;
