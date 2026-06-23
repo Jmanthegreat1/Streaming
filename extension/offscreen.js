@@ -69,6 +69,10 @@ function binarize(dataUrl) {
   });
 }
 
+// Start loading the model as soon as this document exists, so it's warm by the
+// time the first subtitle arrives (the content script prewarms us on enable).
+getWorker().catch(() => {});
+
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.target !== "offscreen" || msg.type !== "ocr") return;
   if (busy) {

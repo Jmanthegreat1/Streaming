@@ -36,37 +36,43 @@ async function translateViaGoogle(texts, source, target) {
 }
 
 // ---------- Hebrew OCR text cleanup (mirrors the server) ----------
-// Move a run of leading sentence punctuation (. ? !) to the end of the segment
-// (the RTL artifact), without doubling up if it already ends with punctuation.
-function fixLeadingPunct(s) {
-  s = s.replace(/^\s*\.\s*(?=[-–—])/, ""); // stray period right before a dialogue dash
-  const m = /^\s*([?!.]+)\s*(.+?)\s*$/.exec(s);
-  if (!m) return s;
-  return m[2].replace(/[?!.]+$/, "") + m[1];
+// Normalize sentence punctuation in one segment: pick the end mark (? > ! > .)
+// from whatever terminal punctuation is present, strip ALL misplaced marks
+// (the RTL artifact can put them anywhere), and re-attach one at the end.
+// Decimal points (5.5) are protected. Clean segments are left untouched.
+function fixSegmentPunct(seg) {
+  const t = (seg || "").trim();
+  if (!t) return "";
+  const inner = t.slice(0, -1);
+  if (!/[?!]/.test(inner) && !/(?<!\d)\.(?!\d)/.test(inner)) return t; // already clean
+  const end = /\?/.test(t) ? "?" : /!/.test(t) ? "!" : /(?<!\d)\.(?!\d)/.test(t) ? "." : "";
+  const body = t
+    .replace(/[?!]+/g, " ")
+    .replace(/(?<!\d)\.+(?!\d)/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return body ? body + end : t;
 }
 
-// Reorder punctuation across a whole line: handle each dialogue segment
-// (split on " - ") on its own, so multi-speaker lines come out right.
+// Reorder punctuation across a line, handling each dialogue segment (split on " - ").
 function reorderPunct(s) {
   s = s.replace(/^\s*\.\s*(?=[-–—])/, ""); // stray period before a leading dash
   return s
     .split(/(\s*[-–—]\s+)/)
-    .map((seg) => (/^\s*[-–—]\s+$/.test(seg) ? seg : fixLeadingPunct(seg)))
+    .map((seg) => (/^\s*[-–—]\s+$/.test(seg) ? seg : fixSegmentPunct(seg)))
     .join("")
     .trim();
 }
 
 function cleanHebrew(raw) {
   if (!raw) return "";
-  const lines = raw
-    .split(/\r?\n/)
-    .map((l) => fixLeadingPunct(l.replace(/\s+/g, " ").trim()))
-    .filter(Boolean);
-  let text = lines.join(" ");
+  let text = raw.split(/\r?\n/).map((l) => l.replace(/\s+/g, " ").trim()).filter(Boolean).join(" ");
   text = text.replace(/(^|\s)[|_~`^*¦•·=]+(?=\s|$)/g, " ");
   text = text.replace(/(^|\s)[.]{1,2}(?=\s|$)/g, " ");
   text = text.replace(/\s+/g, " ").trim().replace(/^[|_~`^*¦•·=]+|[|_~`^*¦•·=]+$/g, "").trim();
-  text = fixLeadingPunct(text);
+  // Clean the Hebrew punctuation BEFORE translating, so Google gets the question
+  // mark in the right place and doesn't carry the RTL scramble into English.
+  text = reorderPunct(text);
   // Reject noise (white shirt stripes, clocks, numbers): need a couple of Hebrew
   // letters AND Hebrew must dominate over digits/latin, or it's not a subtitle.
   const heb = (text.match(/[א-ת]/g) || []).length;
@@ -169,6 +175,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         sendResponse({ ok: false, error: String(e && e.message ? e.message : e) });
       }
     })();
+    return true;
+  }
+
+  if (msg.type === "prewarm") {
+    // Spin up the offscreen doc (which starts loading the model) before the
+    // first subtitle, so the first line isn't delayed by a cold model load.
+    ensureOffscreen().then(() => sendResponse({ ok: true })).catch(() => sendResponse({ ok: false }));
     return true;
   }
 

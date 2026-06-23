@@ -46,14 +46,28 @@ def _translate_one(text, source, target):
     return GoogleTranslator(source=source, target=target).translate(text) or text
 
 
-def _fix_leading_punct(s):
-    """RTL artifact: a run of leading sentence punctuation (? ! .) belongs at the
-    END. Move it there without doubling up if the segment already ends with it."""
-    s = re.sub(r"^\s*\.\s*(?=[-–—])", "", s)  # drop a stray period before a dialogue dash
-    m = re.match(r"^\s*([?!.]+)\s*(.+?)\s*$", s)
-    if not m:
-        return s
-    return re.sub(r"[?!.]+$", "", m.group(2)) + m.group(1)
+def _fix_segment_punct(seg):
+    """Normalize sentence punctuation in one segment: pick the end mark
+    (? > ! > .) from whatever is present, strip ALL misplaced marks (the RTL
+    scramble), and re-attach one at the end. Decimals (5.5) are protected."""
+    t = (seg or "").strip()
+    if not t:
+        return ""
+    inner = t[:-1]
+    if not re.search(r"[?!]", inner) and not re.search(r"(?<!\d)\.(?!\d)", inner):
+        return t  # already clean
+    if "?" in t:
+        end = "?"
+    elif "!" in t:
+        end = "!"
+    elif re.search(r"(?<!\d)\.(?!\d)", t):
+        end = "."
+    else:
+        end = ""
+    body = re.sub(r"[?!]+", " ", t)
+    body = re.sub(r"(?<!\d)\.+(?!\d)", " ", body)
+    body = re.sub(r"\s+", " ", body).strip()
+    return body + end if body else t
 
 
 def _reorder_punct(s):
@@ -61,7 +75,7 @@ def _reorder_punct(s):
     (split on ' - ') separately so multi-speaker lines come out right."""
     s = re.sub(r"^\s*\.\s*(?=[-–—])", "", s)  # stray period before a leading dash
     parts = re.split(r"(\s*[-–—]\s+)", s)
-    out = [p if re.fullmatch(r"\s*[-–—]\s+", p or "") else _fix_leading_punct(p) for p in parts]
+    out = [p if re.fullmatch(r"\s*[-–—]\s+", p or "") else _fix_segment_punct(p) for p in parts]
     return "".join(out).strip()
 
 
@@ -137,16 +151,13 @@ def ocr_translate():
     except pytesseract.TesseractError as e:
         return jsonify({"error": "OCR failed: " + str(e)}), 500
 
-    # A sentence split across two lines puts its period at the START of the next
-    # line (RTL), so fix leading punctuation PER LINE, then join.
-    lines = [_fix_leading_punct(" ".join(ln.split())) for ln in raw.splitlines()]
-    text = " ".join(ln for ln in lines if ln)
+    text = " ".join(" ".join(ln.split()) for ln in raw.splitlines() if ln.strip())
 
     # Drop OCR noise: isolated symbol tokens and stray symbols at the edges.
     text = re.sub(r"(?:^|\s)[|_~`^*¦•·=]+(?=\s|$)", " ", text)
     text = re.sub(r"(?:^|\s)[.]{1,2}(?=\s|$)", " ", text)
     text = " ".join(text.split()).strip(" |_~`^*¦•·=")
-    text = _fix_leading_punct(text)
+    text = _reorder_punct(text)
 
     # Guard against OCR noise (specks, white shirts, clocks/numbers) becoming
     # random words: need a couple of Hebrew letters AND Hebrew must dominate.

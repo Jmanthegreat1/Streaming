@@ -89,9 +89,9 @@
       el.innerHTML = "";
       return;
     }
-    // Keep the line up long enough to read (scaled to length), then it clears
-    // when the box empties or is replaced by the next line.
-    displayUntil = Date.now() + Math.min(5000, Math.max(1500, 1000 + text.length * 50));
+    // Tiny floor so a just-arrived short line flashes; otherwise the English
+    // tracks the Hebrew and clears when the box empties.
+    displayUntil = Date.now() + 400;
     // The band hugs the text and wraps long sentences into stacked lines,
     // centered in the highlighted area. Font is a steady fraction of the screen.
     const fontPx = Math.max(15, Math.min(Math.round(window.innerHeight * 0.038), 38));
@@ -416,6 +416,10 @@
       startDomObserver();
     } else {
       if (overlayEl) overlayEl.style.display = "none";
+      // Warm up the on-device model now so the first subtitle isn't delayed.
+      if (state.engine === "local") {
+        chrome.runtime.sendMessage({ type: "prewarm" }, () => void chrome.runtime.lastError);
+      }
       scheduleOcr();
     }
   }
