@@ -368,7 +368,8 @@
     // Fast path (reading the video frame) is cheap and local, so poll often.
     // Screenshot fallback is rate-limited by Chrome (~2/s), so ease off there.
     if (isTop && state.enabled && state.mode === "ocr") {
-      ocrTimer = setTimeout(ocrTick, tainted ? 520 : 220);
+      // On-device OCR wants CPU headroom, so poll a touch slower there.
+      ocrTimer = setTimeout(ocrTick, tainted ? 520 : state.engine === "local" ? 320 : 220);
     }
   }
 

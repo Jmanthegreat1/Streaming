@@ -47,7 +47,8 @@ function binarize(dataUrl) {
   return new Promise((resolve, reject) => {
     const img = new Image();
     img.onload = () => {
-      const scale = img.width < 900 ? 900 / img.width : 1;
+      // Cap the OCR image (~720x200): a big highlighted area was huge and slow.
+      const scale = Math.min(720 / img.width, 200 / img.height, 2);
       const c = document.createElement("canvas");
       c.width = Math.max(1, Math.round(img.width * scale));
       c.height = Math.max(1, Math.round(img.height * scale));

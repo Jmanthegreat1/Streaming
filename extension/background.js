@@ -54,8 +54,11 @@ function cleanHebrew(raw) {
   text = text.replace(/(^|\s)[.]{1,2}(?=\s|$)/g, " ");
   text = text.replace(/\s+/g, " ").trim().replace(/^[|_~`^*¦•·=]+|[|_~`^*¦•·=]+$/g, "").trim();
   text = fixLeadingPunct(text);
-  const hebCount = (text.match(/[א-ת]/g) || []).length;
-  return hebCount < 2 ? "" : text; // reject noise so it can't become random words
+  // Reject noise (white shirt stripes, clocks, numbers): need a couple of Hebrew
+  // letters AND Hebrew must dominate over digits/latin, or it's not a subtitle.
+  const heb = (text.match(/[א-ת]/g) || []).length;
+  const alnum = (text.match(/[א-ת0-9A-Za-z]/g) || []).length;
+  return heb < 2 || heb < alnum * 0.6 ? "" : text;
 }
 
 // ---------- offscreen document (hosts Tesseract) ----------
