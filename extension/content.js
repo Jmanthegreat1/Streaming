@@ -194,6 +194,7 @@
   let prevHash = "";
   let sentHash = "";
   let emptyTicks = 0;
+  let stableTicks = 0; // consecutive ticks the box has been unchanged
   let present = false; // is Hebrew currently on screen in the box?
   let tainted = false; // set if the video frame can't be read into a canvas
   let selecting = false; // true while drawing the subtitle box
@@ -290,20 +291,26 @@
         }
       }
     }
-    let hash = "";
-    for (let c = 0; c < cols; c++) hash += col[c] > 1 ? "1" : "0";
-    return { hash, bright };
+    let hash = "", activeCols = 0;
+    for (let c = 0; c < cols; c++) {
+      const on = col[c] > 1;
+      hash += on ? "1" : "0";
+      if (on) activeCols++;
+    }
+    return { hash, bright, activeCols };
   }
 
   function processCrop(canvas, rect) {
     const fp = fingerprint(canvas);
-    // Almost no bright pixels = no Hebrew on screen. Clear the English quickly
-    // (after a couple of ticks, just enough to ignore a one-frame dip) so it
-    // disappears together with the Hebrew.
-    if (fp.bright < 12) {
+    // A real subtitle is a line of TEXT: bright pixels spread across many columns
+    // of the box. A scene-cut flash, a bright object, or a half-faded line is a
+    // blob in a few columns — treat that as "no subtitle" so it isn't OCR'd into
+    // junk like ". ? 7". Needs both enough bright pixels and enough spread.
+    const hasText = fp.bright >= 14 && fp.activeCols >= 8;
+    if (!hasText) {
       present = false;
-      // Clear when the Hebrew's been gone a moment AND the queue is drained, so
-      // we don't cut off lines still waiting to be shown.
+      stableTicks = 0;
+      // Clear when there's no subtitle for a moment AND the queue is drained.
       if (++emptyTicks >= 3 && !queue.length && !queueBusy && sentHash !== "EMPTY") {
         sentHash = "EMPTY";
         showCover("", rect);
@@ -313,10 +320,10 @@
     }
     present = true;
     emptyTicks = 0;
-    // Read a line only once it's settled (same for one tick) so we skip the
-    // fade/transition frames that produce "> --- ." junk and half-sentences.
-    // Up to OCR_CONCURRENCY reads still run in parallel, so lines aren't skipped.
-    if (fp.hash === prevHash && fp.hash !== sentHash && inflight < OCR_CONCURRENCY) {
+    // Read a line only once it's settled for 2 ticks — skips the unstable
+    // frames during a scene/subtitle transition that produce junk.
+    stableTicks = fp.hash === prevHash ? stableTicks + 1 : 0;
+    if (stableTicks >= 2 && fp.hash !== sentHash && inflight < OCR_CONCURRENCY) {
       sentHash = fp.hash;
       sendOcr(canvas, rect);
     }
@@ -426,6 +433,7 @@
     }
     prevHash = sentHash = "";
     emptyTicks = 0;
+    stableTicks = 0;
     present = false;
     inflight = 0;
     seq = 0;
