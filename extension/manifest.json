@@ -19,6 +19,13 @@
     {
       "matches": ["http://*/*", "https://*/*"],
       "all_frames": true,
+      "run_at": "document_start",
+      "world": "MAIN",
+      "js": ["inject.js"]
+    },
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "all_frames": true,
       "run_at": "document_idle",
       "js": ["content.js"],
       "css": ["overlay.css"]

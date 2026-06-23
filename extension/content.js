@@ -572,5 +572,24 @@
     }
   });
 
+  // --- prefetch probe: confirm we can reach the video stream (step 1) ---
+  let streamManifest = null;
+  let segmentCount = 0;
+  window.addEventListener("message", (e) => {
+    if (e.source !== window || !e.data || !e.data.__subtrans_stream) return;
+    const s = e.data.__subtrans_stream;
+    if (s.kind === "manifest" && !streamManifest) {
+      streamManifest = s.url;
+      console.log("[SubTrans] manifest found:", s.url);
+      if (isTop) toast("Video stream found — prefetch is possible ✓");
+    } else if (s.kind === "segment") {
+      segmentCount++;
+      if (segmentCount === 1) console.log("[SubTrans] first media segment:", s.url);
+      if (segmentCount === 1 && isTop && !streamManifest) {
+        toast("Video segments found (no manifest) — prefetch may be possible");
+      }
+    }
+  });
+
   loadSettings();
 })();
