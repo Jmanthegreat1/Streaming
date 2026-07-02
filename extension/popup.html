@@ -58,6 +58,7 @@
   <div class="row">
     <label for="engine">OCR runs</label>
     <select id="engine">
+      <option value="vision">Google Vision (best, needs key)</option>
       <option value="local">On your laptop (fast)</option>
       <option value="server">On the server</option>
     </select>
@@ -84,9 +85,14 @@
   <button class="ghost" id="clear">Reset selection</button>
 
   <hr class="sep" />
+  <label class="full" for="visionKey">Google Vision API key <b id="reqVision" style="color:#ff8f8f"></b></label>
+  <input type="text" id="visionKey" placeholder="AIza…" />
+  <div class="hint">For the <b>Google Vision</b> engine (most accurate). Get a free key: Google
+    Cloud → enable <b>Cloud Vision API</b> → create an API key.</div>
+
   <label class="full" for="backendUrl">Render backend URL <b id="req" style="color:#ff8f8f"></b></label>
   <input type="text" id="backendUrl" placeholder="https://your-app.onrender.com" />
-  <div class="hint" id="backendHint">Required for screen (OCR) mode — paste your Render URL here.</div>
+  <div class="hint">Only for the "On the server" engine.</div>
 
   <script src="popup.js"></script>
 </body>

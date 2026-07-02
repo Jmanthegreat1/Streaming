@@ -12,11 +12,12 @@
   const DEFAULTS = {
     enabled: false,
     mode: "ocr", // "ocr" | "text"
-    engine: "local", // "local" (on-device Tesseract) | "server"
+    engine: "local", // "local" (on-device Tesseract) | "server" | "vision"
     target: "en",
     source: "auto",
     lang: "heb",
     backendUrl: "",
+    visionKey: "", // Google Cloud Vision API key (for the "vision" engine)
     showOriginal: false,
     selector: null,
     ocrRegion: null, // {fx, fy, fw, fh} fractions of the viewport
@@ -331,30 +332,35 @@
   }
 
   function sendOcr(canvas, rect) {
-    const local = state.engine === "local";
+    const engine = state.engine;
     const image = canvas.toDataURL("image/png");
+    const type = engine === "vision" ? "ocrVision" : engine === "server" ? "ocrTranslate" : "ocrLocal";
     const mySeq = ++seq;
     const t0 = performance.now();
     inflight++;
     let settled = false;
     const done = () => { if (!settled) { settled = true; inflight = Math.max(0, inflight - 1); } };
     // First on-device call loads the model (a few seconds); then it's fast.
-    const safety = setTimeout(done, local ? 15000 : 4000);
+    const safety = setTimeout(done, engine === "local" ? 15000 : 8000);
     chrome.runtime.sendMessage(
       {
-        type: local ? "ocrLocal" : "ocrTranslate",
-        image, source: state.source, target: state.target, lang: state.lang, backendUrl: state.backendUrl,
+        type, image, source: state.source, target: state.target, lang: state.lang,
+        backendUrl: state.backendUrl, visionKey: state.visionKey,
       },
       (resp) => {
         clearTimeout(safety);
         done();
         if (chrome.runtime.lastError || !resp) return;
         if (!resp.ok) {
-          toast(local ? "On-device OCR error (see console)" : "Server error. Check the backend URL.");
+          toast(
+            engine === "vision" ? "Vision error — check your API key"
+            : engine === "server" ? "Server error. Check the backend URL."
+            : "On-device OCR error (see console)"
+          );
           return;
         }
         console.log(
-          "[SubTrans] " + (local ? "on-device" : "server") + " " +
+          "[SubTrans] " + engine + " " +
           Math.round(performance.now() - t0) + "ms" +
           (tainted ? " · screenshot capture" : " · video read")
         );
@@ -395,7 +401,8 @@
     if (!isTop || !state.enabled || state.mode !== "ocr") return;
     if (selecting) return scheduleOcr(); // paused while picking the box
     if (document.hidden || !state.ocrRegion) return scheduleOcr();
-    if (state.engine !== "local" && !state.backendUrl) return scheduleOcr();
+    if (state.engine === "server" && !state.backendUrl) return scheduleOcr();
+    if (state.engine === "vision" && !state.visionKey) return scheduleOcr();
     const rect = regionRect();
     if (!tainted) {
       const c = grabFromVideo(rect);

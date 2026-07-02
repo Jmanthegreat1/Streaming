@@ -35,6 +35,28 @@ async function translateViaGoogle(texts, source, target) {
   return out;
 }
 
+// ---------- Google Cloud Vision OCR (accurate, fast; needs the user's key) ----------
+async function visionOcr(apiKey, dataUrl) {
+  const b64 = dataUrl.includes(",") ? dataUrl.split(",")[1] : dataUrl;
+  const res = await fetch("https://vision.googleapis.com/v1/images:annotate?key=" + encodeURIComponent(apiKey), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      requests: [{
+        image: { content: b64 },
+        features: [{ type: "TEXT_DETECTION" }],
+        imageContext: { languageHints: ["he"] },
+      }],
+    }),
+  });
+  const data = await res.json();
+  const r = data.responses && data.responses[0];
+  if (r && r.error) throw new Error(r.error.message || "Vision error");
+  if (!res.ok) throw new Error("Vision HTTP " + res.status);
+  return (r && ((r.fullTextAnnotation && r.fullTextAnnotation.text) ||
+    (r.textAnnotations && r.textAnnotations[0] && r.textAnnotations[0].description))) || "";
+}
+
 // ---------- Hebrew OCR text cleanup (mirrors the server) ----------
 // Normalize sentence punctuation in one segment: pick the end mark (? > ! > .)
 // from whatever terminal punctuation is present, strip ALL misplaced marks
@@ -170,6 +192,25 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             /* fall through to error */
           }
         }
+        sendResponse({ ok: false, error: String(e && e.message ? e.message : e) });
+      }
+    })();
+    return true;
+  }
+
+  if (msg.type === "ocrVision") {
+    (async () => {
+      try {
+        if (!msg.visionKey) throw new Error("no Vision API key set");
+        const raw = await visionOcr(msg.visionKey, msg.image);
+        const text = cleanHebrew(raw);
+        if (!text) {
+          sendResponse({ ok: true, text: "", translation: "" });
+          return;
+        }
+        const translations = await translateViaGoogle([text], "iw", msg.target || "en");
+        sendResponse({ ok: true, text, translation: reorderPunct(translations[0] || "") });
+      } catch (e) {
         sendResponse({ ok: false, error: String(e && e.message ? e.message : e) });
       }
     })();
