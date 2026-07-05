@@ -1,9 +1,9 @@
-// Runs in the offscreen document. Hosts a POOL of Tesseract workers (one per
-// spare CPU core) via a scheduler, so several subtitle lines can be read in
-// parallel instead of one-at-a-time. This stops lines getting skipped when they
-// change faster than a single OCR pass takes.
+// Runs in the offscreen document. Hosts a small POOL of Tesseract workers via
+// a scheduler, so a couple of subtitle lines can be read in parallel without
+// starving the video player of CPU (a big pool makes the video itself lag —
+// the tab shares cores with the WASM workers).
 
-const POOL = Math.min(6, Math.max(2, (navigator.hardwareConcurrency || 4) - 1));
+const POOL = Math.min(3, Math.max(1, (navigator.hardwareConcurrency || 4) - 2));
 let schedulerPromise = null;
 
 function makeWorker() {

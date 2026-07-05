@@ -121,8 +121,12 @@
     queueBusy = true;
     overlayCleared = false;
     showCover(item.text, regionRect());
-    const base = Math.min(2200, Math.max(800, item.text.length * 50));
-    const dur = Math.max(600, Math.round(base / (1 + 0.35 * queue.length)));
+    // Hold long enough to read, but drain hard when we're behind: a backlog
+    // shortens every hold, and a line that has been queued for a while just
+    // flashes through so the display catches back up to the video.
+    const base = Math.min(2000, Math.max(700, item.text.length * 45));
+    let dur = Math.max(450, Math.round(base / (1 + 0.6 * queue.length)));
+    if (performance.now() - item.t > 4000) dur = Math.min(dur, 350);
     clearTimeout(queueTimer);
     queueTimer = setTimeout(() => {
       queueBusy = false;
@@ -208,7 +212,7 @@
   let queue = []; // translated lines waiting to be shown, in order
   let queueBusy = false; // a line is currently showing for its minimum time
   let queueTimer = null;
-  const OCR_CONCURRENCY = 6; // read up to this many lines at once (uses spare cores)
+  const OCR_CONCURRENCY = 2; // parallel reads; more than this steals CPU from the video
   const SENT_WINDOW_MS = 5000; // how long a sent line blocks an identical re-send
 
   // Time-based (not a plain "last hash") so a line can repeat later in the
@@ -233,7 +237,7 @@
   // read a mid-fade frame. This is what guarantees EVERY line is translated.
   function retroFlush() {
     if (cand && !cand.sent && cand.ticks >= 1 && !recentlySent(cand.hash) &&
-        inflight < OCR_CONCURRENCY + 2) {
+        inflight < OCR_CONCURRENCY + 1) {
       cand.sent = true;
       markSent(cand.hash);
       sendOcr(cand.canvas, cand.rect);
@@ -436,7 +440,7 @@
         );
         const tr = scrubForDisplay(resp.translation || "");
         if (tr) {
-          queue.push({ seq: mySeq, text: tr });
+          queue.push({ seq: mySeq, text: tr, t: performance.now() });
           queue.sort((a, b) => a.seq - b.seq);
           // Every line is shown — the queue only sheds if it falls absurdly
           // far behind (pumpQueue speeds up to drain a backlog instead).

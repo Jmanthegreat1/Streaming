@@ -74,6 +74,10 @@ function endMark(cluster) {
 function descrambleHebSegment(seg) {
   let t = (seg || "").trim();
   if (!t) return "";
+  // Junk quotes hugging a mark cluster ("?למה / ?"למה) defeat the reorder —
+  // drop them. Gershayim BETWEEN letters (צה"ל) are untouched.
+  t = t.replace(/(^|\s)["']+(?=[?!.,:;])/g, "$1");
+  t = t.replace(/([?!.,:;])["']+(?=\p{L})/gu, "$1");
   // A word's end-mark drifted onto the next word ("שלום ?מה") or floats at
   // the end. Dots are not touched here (decimal / ellipsis ambiguity).
   t = t.replace(/(\S)\s+([?!]+)(?=\S)/g, "$1$2 ");
@@ -115,14 +119,29 @@ function decodeEntities(s) {
 // drop junk symbols, move a leading mark cluster to the end where it belongs,
 // fix spacing around marks, collapse repeats. Interior punctuation that the
 // translator produced ("What? Let's go.") is never rearranged.
+function finalizeEnglishSegment(t) {
+  t = t.trim();
+  if (!t) return "";
+  // Junk quotes hugging a mark cluster ("?why / ?"why) defeat the reorder — drop them.
+  t = t.replace(/(^|\s)["']+(?=[?!.,:;])/g, "$1");
+  t = t.replace(/([?!.,:;])["']+(?=\p{L})/gu, "$1");
+  const m = t.match(/^([?!.,:;]+)\s*([\s\S]*)$/);
+  if (m && !/^\.{2,}$/.test(m[1])) { // a leading "..." is a real continuation
+    t = m[2].trim();
+    if (t && !/[?!.]$/.test(t)) t += endMark(m[1]);
+  }
+  return t;
+}
+
 function finalizeEnglish(s) {
   s = decodeEntities(s || "");
   s = s.replace(/[<>#*|~=^_{}\[\]\\/@`\x00-\x1f\x7f]/g, " ").trim();
-  const m = s.match(/^([?!.,:;]+)\s*([\s\S]*)$/);
-  if (m && !/^\.{2,}$/.test(m[1])) { // a leading "..." is a real continuation
-    s = m[2].trim();
-    if (s && !/[?!.]$/.test(s)) s += endMark(m[1]);
-  }
+  // Per dialogue segment (split on " - ") so "- ?Why" becomes "- Why?" too.
+  s = s
+    .split(/(\s*[-–—]\s+)/)
+    .map((seg) => (/^\s*[-–—]\s+$/.test(seg) ? seg : finalizeEnglishSegment(seg)))
+    .join("");
+  if ((s.match(/"/g) || []).length === 1) s = s.replace('"', " "); // an unpaired quote is OCR junk
   s = s.replace(/\s+([,.;:?!])/g, "$1"); // "Yes , no ." → "Yes, no."
   s = s.replace(/([,;:?!])(?=\p{L})/gu, "$1 "); // mark glued to the next word
   s = s.replace(/\?{2,}/g, "?").replace(/!{2,}/g, "!").replace(/,{2,}/g, ",");

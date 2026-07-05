@@ -67,6 +67,10 @@ def _descramble_heb_segment(seg):
     t = (seg or "").strip()
     if not t:
         return ""
+    # Junk quotes hugging a mark cluster ("?למה / ?"למה) defeat the reorder —
+    # drop them. Gershayim BETWEEN letters (צה"ל) are untouched.
+    t = re.sub(r"(^|\s)[\"']+(?=[?!.,:;])", r"\1", t)
+    t = re.sub(r"([?!.,:;])[\"']+(?=[^\W\d_])", r"\1", t)
     # A word's end-mark drifted onto the next word ("שלום ?מה") or floats at
     # the end. Dots are not touched here (decimal / ellipsis ambiguity).
     t = re.sub(r"(\S)\s+([?!]+)(?=\S)", r"\1\2 ", t)
@@ -105,6 +109,21 @@ def _decode_entities(s):
     return s
 
 
+def _finalize_english_segment(t):
+    t = t.strip()
+    if not t:
+        return ""
+    # Junk quotes hugging a mark cluster ("?why / ?"why) defeat the reorder — drop them.
+    t = re.sub(r"(^|\s)[\"']+(?=[?!.,:;])", r"\1", t)
+    t = re.sub(r"([?!.,:;])[\"']+(?=[^\W\d_])", r"\1", t)
+    m = re.match(r"^([?!.,:;]+)\s*(.*)$", t, flags=re.S)
+    if m and not re.fullmatch(r"\.{2,}", m.group(1)):  # a leading "..." is a real continuation
+        t = m.group(2).strip()
+        if t and not re.search(r"[?!.]$", t):
+            t += _end_mark(m.group(1))
+    return t
+
+
 def _finalize_english(s):
     """Tidy the translated line WITHOUT restructuring it: decode HTML entities,
     drop junk symbols, move a leading mark cluster to the end where it belongs,
@@ -113,11 +132,11 @@ def _finalize_english(s):
     s = _decode_entities(s or "")
     s = re.sub(r"[<>#*|~=^_{}\[\]\\/@`\x00-\x1f\x7f]", " ", s)
     s = s.strip()
-    m = re.match(r"^([?!.,:;]+)\s*(.*)$", s, flags=re.S)
-    if m and not re.fullmatch(r"\.{2,}", m.group(1)):  # a leading "..." is a real continuation
-        s = m.group(2).strip()
-        if s and not re.search(r"[?!.]$", s):
-            s += _end_mark(m.group(1))
+    # Per dialogue segment (split on " - ") so "- ?Why" becomes "- Why?" too.
+    parts = re.split(r"(\s*[-–—]\s+)", s)
+    s = "".join(p if re.fullmatch(r"\s*[-–—]\s+", p or "") else _finalize_english_segment(p) for p in parts)
+    if s.count('"') == 1:
+        s = s.replace('"', " ")  # an unpaired quote is OCR junk
     s = re.sub(r"\s+([,.;:?!])", r"\1", s)  # "Yes , no ." → "Yes, no."
     s = re.sub(r"([,;:?!])(?=[^\W\d_])", r"\1 ", s)  # mark glued to the next word
     s = re.sub(r"\?{2,}", "?", s)
