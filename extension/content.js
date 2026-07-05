@@ -71,6 +71,10 @@
     el.innerHTML = "";
     const d = document.createElement("div");
     d.className = "__subtrans_en";
+    // Kan's page is RTL; without an explicit direction an English sentence
+    // renders with its end punctuation on the LEFT. First-strong ("auto")
+    // keeps RTL targets (Hebrew/Arabic) correct too.
+    d.dir = "auto";
     d.textContent = en;
     el.appendChild(d);
     if (state.showOriginal && original) {
@@ -107,31 +111,25 @@
     el.innerHTML = "";
     const d = document.createElement("div");
     d.className = "__subtrans_en";
+    // Kan's page is RTL; without an explicit direction an English sentence
+    // renders with its end punctuation on the LEFT. First-strong ("auto")
+    // keeps RTL targets (Hebrew/Arabic) correct too.
+    d.dir = "auto";
     d.textContent = text;
     d.style.fontSize = fontPx + "px";
     el.appendChild(d);
   }
 
-  // Show queued translations one at a time, in order, each for a readable beat.
-  // Every line is shown; when a backlog builds up, each line's hold time
-  // shrinks (down to 600ms) so the display catches back up to live playback.
-  function pumpQueue() {
-    if (queueBusy || !queue.length) return;
-    const item = queue.shift();
-    queueBusy = true;
+  // Show a translation the MOMENT it arrives; newest wins. A line stays up
+  // until the next line lands (or the subtitle clears), so the overlay tracks
+  // the video in real time. A slow OCR result for an OLDER line is dropped
+  // rather than shown late — an ordered hold-each-line queue was tried here
+  // and it drifted seconds behind live playback.
+  function showResult(mySeq, text) {
+    if (mySeq <= shownSeq) return; // an older line finished late — stale, skip
+    shownSeq = mySeq;
     overlayCleared = false;
-    showCover(item.text, regionRect());
-    // Hold long enough to read, but drain hard when we're behind: a backlog
-    // shortens every hold, and a line that has been queued for a while just
-    // flashes through so the display catches back up to the video.
-    const base = Math.min(2000, Math.max(700, item.text.length * 45));
-    let dur = Math.max(450, Math.round(base / (1 + 0.6 * queue.length)));
-    if (performance.now() - item.t > 4000) dur = Math.min(dur, 350);
-    clearTimeout(queueTimer);
-    queueTimer = setTimeout(() => {
-      queueBusy = false;
-      pumpQueue();
-    }, dur);
+    showCover(text, regionRect());
   }
 
   document.addEventListener("fullscreenchange", () => {
@@ -208,10 +206,8 @@
   let tainted = false; // set if the video frame can't be read into a canvas
   let selecting = false; // true while drawing the subtitle box
   let inflight = 0; // OCR requests currently in flight (pooled across workers)
-  let seq = 0; // line counter, to display results in order
-  let queue = []; // translated lines waiting to be shown, in order
-  let queueBusy = false; // a line is currently showing for its minimum time
-  let queueTimer = null;
+  let seq = 0; // line counter, so a late result for an old line can be dropped
+  let shownSeq = 0; // seq of the line currently on the overlay
   const OCR_CONCURRENCY = 2; // parallel reads; more than this steals CPU from the video
   const SENT_WINDOW_MS = 5000; // how long a sent line blocks an identical re-send
 
@@ -369,8 +365,8 @@
       stableTicks = 0;
       retroFlush(); // a brief line that just vanished still gets read
       cand = null;
-      // Clear when there's no subtitle for a moment AND the queue is drained.
-      if (++emptyTicks >= 3 && !queue.length && !queueBusy && !overlayCleared) {
+      // Clear once there's been no subtitle on screen for a moment.
+      if (++emptyTicks >= 3 && !overlayCleared) {
         overlayCleared = true;
         showCover("", rect);
       }
@@ -439,14 +435,7 @@
           (tainted ? " · screenshot capture" : " · video read")
         );
         const tr = scrubForDisplay(resp.translation || "");
-        if (tr) {
-          queue.push({ seq: mySeq, text: tr, t: performance.now() });
-          queue.sort((a, b) => a.seq - b.seq);
-          // Every line is shown — the queue only sheds if it falls absurdly
-          // far behind (pumpQueue speeds up to drain a backlog instead).
-          if (queue.length > 8) queue.splice(0, queue.length - 8);
-          pumpQueue();
-        }
+        if (tr) showResult(mySeq, tr);
       }
     );
   }
@@ -496,7 +485,7 @@
     // Screenshot fallback is rate-limited by Chrome (~2/s), so ease off there.
     if (isTop && state.enabled && state.mode === "ocr") {
       // On-device OCR wants CPU headroom, so poll a touch slower there.
-      ocrTimer = setTimeout(ocrTick, tainted ? 520 : state.engine === "local" ? 320 : 220);
+      ocrTimer = setTimeout(ocrTick, tainted ? 520 : state.engine === "local" ? 260 : 220);
     }
   }
 
@@ -521,9 +510,7 @@
     present = false;
     inflight = 0;
     seq = 0;
-    queue = [];
-    queueBusy = false;
-    clearTimeout(queueTimer);
+    shownSeq = 0;
     lastText = "";
 
     if (!state.enabled) {
