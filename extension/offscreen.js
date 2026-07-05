@@ -14,7 +14,11 @@ function makeWorker() {
     workerBlobURL: false,
     gzip: true,
   }).then(async (w) => {
-    await w.setParameters({ tessedit_pageseg_mode: "6" });
+    // Blacklist junk glyphs so Tesseract never emits them in the first place.
+    await w.setParameters({
+      tessedit_pageseg_mode: "6",
+      tessedit_char_blacklist: "<>#*|~=_{}[]/\\@^",
+    });
     return w;
   });
 }

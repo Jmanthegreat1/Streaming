@@ -113,14 +113,16 @@
   }
 
   // Show queued translations one at a time, in order, each for a readable beat.
-  // This keeps every read line (parallel OCR finishes out of order) without
-  // letting it drift more than a few lines behind (oldest are dropped).
+  // Every line is shown; when a backlog builds up, each line's hold time
+  // shrinks (down to 600ms) so the display catches back up to live playback.
   function pumpQueue() {
     if (queueBusy || !queue.length) return;
     const item = queue.shift();
     queueBusy = true;
+    overlayCleared = false;
     showCover(item.text, regionRect());
-    const dur = Math.min(2200, Math.max(800, item.text.length * 50));
+    const base = Math.min(2200, Math.max(800, item.text.length * 50));
+    const dur = Math.max(600, Math.round(base / (1 + 0.35 * queue.length)));
     clearTimeout(queueTimer);
     queueTimer = setTimeout(() => {
       queueBusy = false;
@@ -193,7 +195,9 @@
   // ==========================================================================
   let ocrTimer = null;
   let prevHash = "";
-  let sentHash = "";
+  let recentSent = []; // {hash, t} — lines sent for OCR in the last few seconds (dedupe)
+  let cand = null; // last stable line: {hash, canvas, rect, ticks, sent}
+  let overlayCleared = false; // the cover is currently blank (avoid re-clearing)
   let emptyTicks = 0;
   let stableTicks = 0; // consecutive ticks the box has been unchanged
   let present = false; // is Hebrew currently on screen in the box?
@@ -205,6 +209,55 @@
   let queueBusy = false; // a line is currently showing for its minimum time
   let queueTimer = null;
   const OCR_CONCURRENCY = 6; // read up to this many lines at once (uses spare cores)
+  const SENT_WINDOW_MS = 5000; // how long a sent line blocks an identical re-send
+
+  // Time-based (not a plain "last hash") so a line can repeat later in the
+  // show, but a flickering line doesn't get read twice back-to-back.
+  function recentlySent(hash) {
+    const now = performance.now();
+    recentSent = recentSent.filter((e) => now - e.t < SENT_WINDOW_MS);
+    return recentSent.some((e) => e.hash === hash);
+  }
+  function markSent(hash) {
+    recentSent.push({ hash, t: performance.now() });
+  }
+  function resetOcrDedupe() {
+    recentSent = [];
+    cand = null;
+    overlayCleared = false;
+  }
+
+  // A line that vanished before reaching 2-tick stability (or while all OCR
+  // slots were busy) still gets read — from the settled frame we kept for it.
+  // ticks >= 1 means it was identical on 2 consecutive ticks, so we never
+  // read a mid-fade frame. This is what guarantees EVERY line is translated.
+  function retroFlush() {
+    if (cand && !cand.sent && cand.ticks >= 1 && !recentlySent(cand.hash) &&
+        inflight < OCR_CONCURRENCY + 2) {
+      cand.sent = true;
+      markSent(cand.hash);
+      sendOcr(cand.canvas, cand.rect);
+    }
+  }
+
+  // Last line of defense before anything reaches the screen (covers ALL
+  // engines — the server's output used to be displayed completely raw):
+  // decode HTML entities (&#39; → '), drop junk glyphs, tidy spacing.
+  function scrubForDisplay(s) {
+    const chr = (n) => (n >= 32 && n < 0x110000 ? String.fromCodePoint(n) : " ");
+    s = (s || "")
+      .replace(/&quot;/g, '"')
+      .replace(/&apos;/g, "'")
+      .replace(/&lt;/g, " ")
+      .replace(/&gt;/g, " ")
+      .replace(/&amp;/g, "&")
+      .replace(/&#(\d+);/g, (_, d) => chr(parseInt(d, 10)))
+      .replace(/&#[xX]([0-9A-Fa-f]+);/g, (_, h) => chr(parseInt(h, 16)));
+    s = s.replace(/[<>#*|~=^_{}\[\]\\/@`\x00-\x1f\x7f]/g, " ");
+    s = s.replace(/\s+([,.;:?!])/g, "$1");
+    s = s.replace(/\s+/g, " ").trim();
+    return /[\p{L}\p{N}]/u.test(s) ? s : "";
+  }
 
   // Region is stored as fractions of the VIDEO element, so it tracks the video
   // at any size — including when you switch to fullscreen.
@@ -303,17 +356,18 @@
 
   function processCrop(canvas, rect) {
     const fp = fingerprint(canvas);
-    // A real subtitle is a line of TEXT: bright pixels spread across many columns
-    // of the box. A scene-cut flash, a bright object, or a half-faded line is a
-    // blob in a few columns — treat that as "no subtitle" so it isn't OCR'd into
-    // junk like ". ? 7". Needs both enough bright pixels and enough spread.
-    const hasText = fp.bright >= 14 && fp.activeCols >= 8;
+    // A real subtitle is a line of TEXT: bright pixels with some horizontal
+    // spread. Thresholds are low enough that a short word (כן / לא) passes —
+    // the Hebrew-word guard downstream rejects what's actually noise.
+    const hasText = fp.bright >= 8 && fp.activeCols >= 3;
     if (!hasText) {
       present = false;
       stableTicks = 0;
+      retroFlush(); // a brief line that just vanished still gets read
+      cand = null;
       // Clear when there's no subtitle for a moment AND the queue is drained.
-      if (++emptyTicks >= 3 && !queue.length && !queueBusy && sentHash !== "EMPTY") {
-        sentHash = "EMPTY";
+      if (++emptyTicks >= 3 && !queue.length && !queueBusy && !overlayCleared) {
+        overlayCleared = true;
         showCover("", rect);
       }
       prevHash = fp.hash;
@@ -322,10 +376,26 @@
     present = true;
     emptyTicks = 0;
     // Read a line only once it's settled for 2 ticks — skips the unstable
-    // frames during a scene/subtitle transition that produce junk.
-    stableTicks = fp.hash === prevHash ? stableTicks + 1 : 0;
-    if (stableTicks >= 2 && fp.hash !== sentHash && inflight < OCR_CONCURRENCY) {
-      sentHash = fp.hash;
+    // frames during a scene/subtitle transition that produce junk. Keep the
+    // latest settled frame as a candidate so retroFlush can read a line that
+    // disappears (or changes) before it ever reaches the 2-tick threshold.
+    if (fp.hash === prevHash) {
+      stableTicks++;
+      if (cand && cand.hash === fp.hash) {
+        cand.canvas = canvas;
+        cand.rect = rect;
+        cand.ticks = stableTicks;
+      } else {
+        cand = { hash: fp.hash, canvas, rect, ticks: stableTicks, sent: false };
+      }
+    } else {
+      retroFlush(); // the previous line is gone — read it now if we never did
+      stableTicks = 0;
+      cand = { hash: fp.hash, canvas, rect, ticks: 0, sent: false };
+    }
+    if (stableTicks >= 2 && !recentlySent(fp.hash) && inflight < OCR_CONCURRENCY) {
+      markSent(fp.hash);
+      if (cand && cand.hash === fp.hash) cand.sent = true;
       sendOcr(canvas, rect);
     }
     prevHash = fp.hash;
@@ -364,11 +434,13 @@
           Math.round(performance.now() - t0) + "ms" +
           (tainted ? " · screenshot capture" : " · video read")
         );
-        const tr = resp.translation || "";
+        const tr = scrubForDisplay(resp.translation || "");
         if (tr) {
           queue.push({ seq: mySeq, text: tr });
           queue.sort((a, b) => a.seq - b.seq);
-          if (queue.length > 3) queue.splice(0, queue.length - 3); // cap how far behind it runs
+          // Every line is shown — the queue only sheds if it falls absurdly
+          // far behind (pumpQueue speeds up to drain a backlog instead).
+          if (queue.length > 8) queue.splice(0, queue.length - 8);
           pumpQueue();
         }
       }
@@ -438,7 +510,8 @@
       domObserver.disconnect();
       domObserver = null;
     }
-    prevHash = sentHash = "";
+    prevHash = "";
+    resetOcrDedupe();
     emptyTicks = 0;
     stableTicks = 0;
     present = false;
@@ -593,7 +666,8 @@
     };
     function cleanup() {
       selecting = false;
-      prevHash = sentHash = ""; // re-detect the current line right away
+      prevHash = ""; // re-detect the current line right away
+      resetOcrDedupe();
       window.removeEventListener("mousemove", onMove, true);
       window.removeEventListener("mouseup", onUp, true);
       window.removeEventListener("keydown", onKey, true);
@@ -628,7 +702,7 @@
         overlayEl.style.display = "none";
         overlayEl.innerHTML = "";
       }
-      sentHash = "";
+      resetOcrDedupe();
       toast("Subtitle box erased.");
     }
   });

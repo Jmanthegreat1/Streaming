@@ -27,7 +27,7 @@ async function translateViaGoogle(texts, source, target) {
         "&tl=" + encodeURIComponent(target) +
         "&dt=t&q=" + encodeURIComponent(q);
       const j = await (await fetch(url)).json();
-      out.push(j[0].map((seg) => seg[0]).join(""));
+      out.push(decodeEntities(j[0].map((seg) => seg[0]).join("")));
     } catch (e) {
       out.push(q);
     }
@@ -58,32 +58,77 @@ async function visionOcr(apiKey, dataUrl) {
 }
 
 // ---------- Hebrew OCR text cleanup (mirrors the server) ----------
-// Normalize sentence punctuation in one segment: pick the end mark (? > ! > .)
-// from whatever terminal punctuation is present, strip ALL misplaced marks
-// (the RTL artifact can put them anywhere), and re-attach one at the end.
-// Decimal points (5.5) are protected. Clean segments are left untouched.
-function fixSegmentPunct(seg) {
-  const t = (seg || "").trim();
-  if (!t) return "";
-  const inner = t.slice(0, -1);
-  if (!/[?!]/.test(inner) && !/(?<!\d)\.(?!\d)/.test(inner)) return t; // already clean
-  const end = /\?/.test(t) ? "?" : /!/.test(t) ? "!" : /(?<!\d)\.(?!\d)/.test(t) ? "." : "";
-  const body = t
-    .replace(/[?!]+/g, " ")
-    .replace(/(?<!\d)\.+(?!\d)/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-  return body ? body + end : t;
+// The one end mark a punctuation cluster stands for: ... > ? > ! > . ;
+// comma/colon-only clusters stand for nothing.
+function endMark(cluster) {
+  if (/^\.{2,}$/.test(cluster)) return "...";
+  if (cluster.includes("?")) return "?";
+  if (cluster.includes("!")) return "!";
+  if (cluster.includes(".")) return ".";
+  return "";
 }
 
-// Reorder punctuation across a line, handling each dialogue segment (split on " - ").
-function reorderPunct(s) {
+// Undo the RTL scramble in one OCR'd segment: marks glued to the FRONT of the
+// line (or of a following word) belong at the end of the word before.
+// Interior punctuation is left exactly where it is.
+function descrambleHebSegment(seg) {
+  let t = (seg || "").trim();
+  if (!t) return "";
+  // A word's end-mark drifted onto the next word ("שלום ?מה") or floats at
+  // the end. Dots are not touched here (decimal / ellipsis ambiguity).
+  t = t.replace(/(\S)\s+([?!]+)(?=\S)/g, "$1$2 ");
+  t = t.replace(/(\S)\s+([?!]+)$/, "$1$2");
+  const m = t.match(/^([?!.,:;]+)\s*([\s\S]*)$/);
+  if (m) {
+    const rest = m[2].trim();
+    if (!rest) return ""; // a lone mark is noise, not a subtitle
+    t = /[?!.]$/.test(rest) ? rest : rest + endMark(m[1]);
+  }
+  return t.replace(/\s+/g, " ").trim();
+}
+
+// Fix the RTL punctuation scramble across a line, per dialogue segment (split on " - ").
+function descrambleHebPunct(s) {
   s = s.replace(/^\s*\.\s*(?=[-–—])/, ""); // stray period before a leading dash
   return s
     .split(/(\s*[-–—]\s+)/)
-    .map((seg) => (/^\s*[-–—]\s+$/.test(seg) ? seg : fixSegmentPunct(seg)))
+    .map((seg) => (/^\s*[-–—]\s+$/.test(seg) ? seg : descrambleHebSegment(seg)))
     .join("")
     .trim();
+}
+
+// The free translate endpoints return HTML entities (&#39; for ').
+function decodeEntities(s) {
+  s = s
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&lt;/g, " ")
+    .replace(/&gt;/g, " ")
+    .replace(/&amp;/g, "&");
+  const chr = (n) => (n >= 32 && n < 0x110000 ? String.fromCodePoint(n) : " ");
+  s = s.replace(/&#(\d+);/g, (_, d) => chr(parseInt(d, 10)));
+  s = s.replace(/&#[xX]([0-9A-Fa-f]+);/g, (_, h) => chr(parseInt(h, 16)));
+  return s;
+}
+
+// Tidy the translated line WITHOUT restructuring it: decode HTML entities,
+// drop junk symbols, move a leading mark cluster to the end where it belongs,
+// fix spacing around marks, collapse repeats. Interior punctuation that the
+// translator produced ("What? Let's go.") is never rearranged.
+function finalizeEnglish(s) {
+  s = decodeEntities(s || "");
+  s = s.replace(/[<>#*|~=^_{}\[\]\\/@`\x00-\x1f\x7f]/g, " ").trim();
+  const m = s.match(/^([?!.,:;]+)\s*([\s\S]*)$/);
+  if (m && !/^\.{2,}$/.test(m[1])) { // a leading "..." is a real continuation
+    s = m[2].trim();
+    if (s && !/[?!.]$/.test(s)) s += endMark(m[1]);
+  }
+  s = s.replace(/\s+([,.;:?!])/g, "$1"); // "Yes , no ." → "Yes, no."
+  s = s.replace(/([,;:?!])(?=\p{L})/gu, "$1 "); // mark glued to the next word
+  s = s.replace(/\?{2,}/g, "?").replace(/!{2,}/g, "!").replace(/,{2,}/g, ",");
+  s = s.replace(/\.{4,}/g, "...").replace(/(?<!\.)\.\.(?!\.)/g, "."); // ".." typo; "..." kept
+  s = s.replace(/\s+/g, " ").trim();
+  return /[\p{L}\p{N}]/u.test(s) ? s : "";
 }
 
 function cleanHebrew(raw) {
@@ -95,12 +140,14 @@ function cleanHebrew(raw) {
   text = text.replace(/(^|\s)\.(?=\s|$)/g, " "); // standalone dot
   text = text.replace(/\s+/g, " ").trim();
   // Fix Hebrew punctuation before translating so Google gets it right.
-  text = reorderPunct(text);
-  // A real subtitle has an actual Hebrew WORD (3+ letters in a row), or several
-  // Hebrew letters, and Hebrew dominates. Rejects "ל 8 מ"-style scene-noise junk.
+  text = descrambleHebPunct(text);
+  // A real subtitle has an actual Hebrew WORD (3+ letters in a row), several
+  // Hebrew letters, or is a single compact word (כן / לא / מה?), and Hebrew
+  // dominates. Rejects "ל 8 מ"-style scene-noise junk.
   const heb = (text.match(/[א-ת]/g) || []).length;
   const alnum = (text.match(/[א-ת0-9A-Za-z]/g) || []).length;
   const hasWord = /[א-ת]{3,}/.test(text);
+  if (/^[א-ת]{2,3}[?!.]?$/.test(text)) return text;
   return (!hasWord && heb < 4) || heb < alnum * 0.55 ? "" : text;
 }
 
@@ -172,7 +219,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           return;
         }
         const translations = await translateViaGoogle([text], msg.source || "auto", msg.target || "en");
-        sendResponse({ ok: true, text, translation: reorderPunct(translations[0] || "") });
+        sendResponse({ ok: true, text, translation: finalizeEnglish(translations[0] || "") });
       } catch (e) {
         console.warn("on-device OCR failed:", e); // visible in the service-worker console
         // Fall back to the server so subtitles still appear while we fix local.
@@ -209,7 +256,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           return;
         }
         const translations = await translateViaGoogle([text], "iw", msg.target || "en");
-        sendResponse({ ok: true, text, translation: reorderPunct(translations[0] || "") });
+        sendResponse({ ok: true, text, translation: finalizeEnglish(translations[0] || "") });
       } catch (e) {
         sendResponse({ ok: false, error: String(e && e.message ? e.message : e) });
       }

@@ -46,37 +46,87 @@ def _translate_one(text, source, target):
     return GoogleTranslator(source=source, target=target).translate(text) or text
 
 
-def _fix_segment_punct(seg):
-    """Normalize sentence punctuation in one segment: pick the end mark
-    (? > ! > .) from whatever is present, strip ALL misplaced marks (the RTL
-    scramble), and re-attach one at the end. Decimals (5.5) are protected."""
+def _end_mark(cluster):
+    """The one end mark a punctuation cluster stands for: ... > ? > ! > . ;
+    comma/colon-only clusters stand for nothing."""
+    if re.fullmatch(r"\.{2,}", cluster):
+        return "..."
+    if "?" in cluster:
+        return "?"
+    if "!" in cluster:
+        return "!"
+    if "." in cluster:
+        return "."
+    return ""
+
+
+def _descramble_heb_segment(seg):
+    """Undo the RTL scramble in one OCR'd segment: marks glued to the FRONT of
+    the line (or of a following word) belong at the end of the word before.
+    Interior punctuation is left exactly where it is."""
     t = (seg or "").strip()
     if not t:
         return ""
-    inner = t[:-1]
-    if not re.search(r"[?!]", inner) and not re.search(r"(?<!\d)\.(?!\d)", inner):
-        return t  # already clean
-    if "?" in t:
-        end = "?"
-    elif "!" in t:
-        end = "!"
-    elif re.search(r"(?<!\d)\.(?!\d)", t):
-        end = "."
-    else:
-        end = ""
-    body = re.sub(r"[?!]+", " ", t)
-    body = re.sub(r"(?<!\d)\.+(?!\d)", " ", body)
-    body = re.sub(r"\s+", " ", body).strip()
-    return body + end if body else t
+    # A word's end-mark drifted onto the next word ("שלום ?מה") or floats at
+    # the end. Dots are not touched here (decimal / ellipsis ambiguity).
+    t = re.sub(r"(\S)\s+([?!]+)(?=\S)", r"\1\2 ", t)
+    t = re.sub(r"(\S)\s+([?!]+)$", r"\1\2", t)
+    m = re.match(r"^([?!.,:;]+)\s*(.*)$", t, flags=re.S)
+    if m:
+        rest = m.group(2).strip()
+        if not rest:
+            return ""  # a lone mark is noise, not a subtitle
+        if not re.search(r"[?!.]$", rest):
+            rest += _end_mark(m.group(1))
+        t = rest
+    return re.sub(r"\s+", " ", t).strip()
 
 
-def _reorder_punct(s):
-    """Fix punctuation across a whole line, handling each dialogue segment
-    (split on ' - ') separately so multi-speaker lines come out right."""
+def _descramble_heb_punct(s):
+    """Fix the RTL punctuation scramble across a whole line, handling each
+    dialogue segment (split on ' - ') separately."""
     s = re.sub(r"^\s*\.\s*(?=[-–—])", "", s)  # stray period before a leading dash
     parts = re.split(r"(\s*[-–—]\s+)", s)
-    out = [p if re.fullmatch(r"\s*[-–—]\s+", p or "") else _fix_segment_punct(p) for p in parts]
+    out = [p if re.fullmatch(r"\s*[-–—]\s+", p or "") else _descramble_heb_segment(p) for p in parts]
     return "".join(out).strip()
+
+
+def _decode_entities(s):
+    """The free translate endpoints return HTML entities (&#39; for ')."""
+    for k, v in (("&quot;", '"'), ("&apos;", "'"), ("&lt;", " "), ("&gt;", " "), ("&amp;", "&")):
+        s = s.replace(k, v)
+    def _chr(base):
+        def sub(m):
+            n = int(m.group(1), base)
+            return chr(n) if 32 <= n < 0x110000 else " "
+        return sub
+    s = re.sub(r"&#(\d+);", _chr(10), s)
+    s = re.sub(r"&#[xX]([0-9A-Fa-f]+);", _chr(16), s)
+    return s
+
+
+def _finalize_english(s):
+    """Tidy the translated line WITHOUT restructuring it: decode HTML entities,
+    drop junk symbols, move a leading mark cluster to the end where it belongs,
+    fix spacing around marks, collapse repeats. Interior punctuation that the
+    translator produced ("What? Let's go.") is never rearranged."""
+    s = _decode_entities(s or "")
+    s = re.sub(r"[<>#*|~=^_{}\[\]\\/@`\x00-\x1f\x7f]", " ", s)
+    s = s.strip()
+    m = re.match(r"^([?!.,:;]+)\s*(.*)$", s, flags=re.S)
+    if m and not re.fullmatch(r"\.{2,}", m.group(1)):  # a leading "..." is a real continuation
+        s = m.group(2).strip()
+        if s and not re.search(r"[?!.]$", s):
+            s += _end_mark(m.group(1))
+    s = re.sub(r"\s+([,.;:?!])", r"\1", s)  # "Yes , no ." → "Yes, no."
+    s = re.sub(r"([,;:?!])(?=[^\W\d_])", r"\1 ", s)  # mark glued to the next word
+    s = re.sub(r"\?{2,}", "?", s)
+    s = re.sub(r"!{2,}", "!", s)
+    s = re.sub(r",{2,}", ",", s)
+    s = re.sub(r"\.{4,}", "...", s)
+    s = re.sub(r"(?<!\.)\.\.(?!\.)", ".", s)  # ".." is a typo; "..." is kept
+    s = re.sub(r"\s+", " ", s).strip()
+    return s if re.search(r"[^\W_]", s) else ""
 
 
 def translate_text(text, source, target):
@@ -144,8 +194,10 @@ def ocr_translate():
         factor = 900 / img.width
         img = img.resize((round(img.width * factor), round(img.height * factor)))
 
-    # Single fast LSTM pass; image is already black-on-white.
-    config = f"--oem 1 --psm {psm} -c tessedit_do_invert=0"
+    # Single fast LSTM pass; image is already black-on-white. The blacklist
+    # stops Tesseract emitting junk glyphs (>, #, |…) in the first place.
+    # NOTE: no backslash/quote/space in the blacklist — pytesseract shlex-splits this.
+    config = f"--oem 1 --psm {psm} -c tessedit_do_invert=0 -c tessedit_char_blacklist=<>#*|~=_{{}}[]/@^"
     try:
         raw = pytesseract.image_to_string(img, lang=lang, config=config)
     except pytesseract.TesseractError as e:
@@ -158,18 +210,20 @@ def ocr_translate():
     text = re.sub(r"(?:^|\s)[-–—.]{2,}(?=\s|$)", " ", text)  # runs like --- or ..
     text = re.sub(r"(?:^|\s)\.(?=\s|$)", " ", text)  # standalone dot
     text = " ".join(text.split())
-    text = _reorder_punct(text)
+    text = _descramble_heb_punct(text)
 
-    # A real subtitle has an actual Hebrew WORD (3+ letters), or several Hebrew
-    # letters, and Hebrew dominates. Rejects scene-noise junk like "ל 8 מ".
+    # A real subtitle has an actual Hebrew WORD (3+ letters), several Hebrew
+    # letters, or is a single compact word (כן / לא / מה?), and Hebrew dominates.
+    # Rejects scene-noise junk like "ל 8 מ".
     if lang.startswith(("heb", "iw")):
         heb = len(re.findall(r"[א-ת]", text))
         alnum = len(re.findall(r"[א-ת0-9A-Za-z]", text))
         has_word = bool(re.search(r"[א-ת]{3,}", text))
-        if (not has_word and heb < 4) or heb < alnum * 0.55:
+        single_token = bool(re.fullmatch(r"[א-ת]{2,3}[?!.]?", text))
+        if not single_token and ((not has_word and heb < 4) or heb < alnum * 0.55):
             return jsonify({"text": "", "translation": ""})
 
-    translation = _reorder_punct(translate_text(text, source, target))
+    translation = _finalize_english(translate_text(text, source, target))
     return jsonify({"text": text, "translation": translation})
 
 
