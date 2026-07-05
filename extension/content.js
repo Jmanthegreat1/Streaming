@@ -12,11 +12,14 @@
   const DEFAULTS = {
     enabled: false,
     mode: "ocr", // "ocr" | "text"
-    engine: "local", // "local" (on-device Tesseract) | "server" | "vision"
+    // "server" reads the crop on the free Hugging Face Space — zero CPU on
+    // this machine, so the video never lags. "local" (on-device Tesseract)
+    // remains available but its WASM workers compete with video decoding.
+    engine: "server", // "server" | "local" | "vision"
     target: "en",
     source: "auto",
     lang: "heb",
-    backendUrl: "",
+    backendUrl: "https://jmanthegreat1-subtitle-translate.hf.space",
     visionKey: "", // Google Cloud Vision API key (for the "vision" engine)
     showOriginal: false,
     selector: null,
@@ -407,6 +410,16 @@
 
   function sendOcr(canvas, rect) {
     const engine = state.engine;
+    // The server rescales to ~900px anyway — don't upload a huge fullscreen
+    // crop. (The local engine does its own downscale in the offscreen doc.)
+    if (engine !== "local" && canvas.width > 1100) {
+      const s = 1100 / canvas.width;
+      const c = document.createElement("canvas");
+      c.width = 1100;
+      c.height = Math.max(1, Math.round(canvas.height * s));
+      c.getContext("2d").drawImage(canvas, 0, 0, c.width, c.height);
+      canvas = c;
+    }
     const image = canvas.toDataURL("image/png");
     const type = engine === "vision" ? "ocrVision" : engine === "server" ? "ocrTranslate" : "ocrLocal";
     const mySeq = ++seq;

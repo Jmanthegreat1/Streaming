@@ -7,7 +7,14 @@ const LANGUAGES = {
   Russian: "ru", Spanish: "es", Turkish: "tr", Ukrainian: "uk", Yiddish: "yi",
 };
 
-const DEFAULTS = { enabled: false, mode: "ocr", engine: "local", target: "en", backendUrl: "", visionKey: "" };
+const DEFAULTS = {
+  enabled: false,
+  mode: "ocr",
+  engine: "server", // free Hugging Face Space — OCR off-device so the video never lags
+  target: "en",
+  backendUrl: "https://jmanthegreat1-subtitle-translate.hf.space",
+  visionKey: "",
+};
 const $ = (id) => document.getElementById(id);
 
 for (const [name, code] of Object.entries(LANGUAGES)) {

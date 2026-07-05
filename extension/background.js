@@ -310,3 +310,18 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
 });
+
+// One-time switch of saved settings to the free server engine: on-device OCR
+// (WASM workers) competes with video decoding and made the video itself lag
+// and buffer. The Hugging Face Space does the same read+translate off-device.
+const BACKEND_DEFAULT = "https://jmanthegreat1-subtitle-translate.hf.space";
+chrome.runtime.onInstalled.addListener(() => {
+  chrome.storage.sync.get({ engine: "local", backendUrl: "", serverMigration1: false }, (s) => {
+    if (s.serverMigration1) return;
+    chrome.storage.sync.set({
+      engine: "server",
+      backendUrl: s.backendUrl || BACKEND_DEFAULT,
+      serverMigration1: true,
+    });
+  });
+});
