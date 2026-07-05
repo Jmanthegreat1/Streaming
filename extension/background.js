@@ -150,6 +150,14 @@ function finalizeEnglish(s) {
   return /[\p{L}\p{N}]/u.test(s) ? s : "";
 }
 
+// Google often drops a trailing ?/! when translating a subtitle line; carry
+// the Hebrew line's own end mark back onto the translation.
+function carryEndMark(heb, en) {
+  const m = (heb || "").match(/([?!])\s*$/);
+  if (m && en && !/[?!.]$/.test(en)) return en + m[1];
+  return en;
+}
+
 function cleanHebrew(raw) {
   if (!raw) return "";
   let text = raw.split(/\r?\n/).map((l) => l.replace(/\s+/g, " ").trim()).filter(Boolean).join(" ");
@@ -238,7 +246,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           return;
         }
         const translations = await translateViaGoogle([text], msg.source || "auto", msg.target || "en");
-        sendResponse({ ok: true, text, translation: finalizeEnglish(translations[0] || "") });
+        sendResponse({ ok: true, text, translation: carryEndMark(text, finalizeEnglish(translations[0] || "")) });
       } catch (e) {
         console.warn("on-device OCR failed:", e); // visible in the service-worker console
         // Fall back to the server so subtitles still appear while we fix local.
@@ -275,7 +283,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           return;
         }
         const translations = await translateViaGoogle([text], "iw", msg.target || "en");
-        sendResponse({ ok: true, text, translation: finalizeEnglish(translations[0] || "") });
+        sendResponse({ ok: true, text, translation: carryEndMark(text, finalizeEnglish(translations[0] || "")) });
       } catch (e) {
         sendResponse({ ok: false, error: String(e && e.message ? e.message : e) });
       }

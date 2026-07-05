@@ -73,8 +73,10 @@
     d.className = "__subtrans_en";
     // Kan's page is RTL; without an explicit direction an English sentence
     // renders with its end punctuation on the LEFT. First-strong ("auto")
-    // keeps RTL targets (Hebrew/Arabic) correct too.
+    // keeps RTL targets (Hebrew/Arabic) correct too. The inline plaintext
+    // bidi wins even if the page's own CSS forces direction on our div.
     d.dir = "auto";
+    d.style.unicodeBidi = "plaintext";
     d.textContent = en;
     el.appendChild(d);
     if (state.showOriginal && original) {
@@ -113,8 +115,10 @@
     d.className = "__subtrans_en";
     // Kan's page is RTL; without an explicit direction an English sentence
     // renders with its end punctuation on the LEFT. First-strong ("auto")
-    // keeps RTL targets (Hebrew/Arabic) correct too.
+    // keeps RTL targets (Hebrew/Arabic) correct too. The inline plaintext
+    // bidi wins even if the page's own CSS forces direction on our div.
     d.dir = "auto";
+    d.style.unicodeBidi = "plaintext";
     d.textContent = text;
     d.style.fontSize = fontPx + "px";
     el.appendChild(d);

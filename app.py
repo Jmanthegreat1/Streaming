@@ -148,6 +148,15 @@ def _finalize_english(s):
     return s if re.search(r"[^\W_]", s) else ""
 
 
+def _carry_end_mark(heb, en):
+    """Google often drops a trailing ?/! when translating a subtitle line;
+    carry the Hebrew line's own end mark back onto the translation."""
+    m = re.search(r"([?!])\s*$", heb or "")
+    if m and en and not re.search(r"[?!.]$", en):
+        return en + m.group(1)
+    return en
+
+
 def translate_text(text, source, target):
     text = (text or "").strip()
     if not text:
@@ -242,7 +251,7 @@ def ocr_translate():
         if not single_token and ((not has_word and heb < 4) or heb < alnum * 0.55):
             return jsonify({"text": "", "translation": ""})
 
-    translation = _finalize_english(translate_text(text, source, target))
+    translation = _carry_end_mark(text, _finalize_english(translate_text(text, source, target)))
     return jsonify({"text": text, "translation": translation})
 
 

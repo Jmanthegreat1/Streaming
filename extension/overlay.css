@@ -11,6 +11,8 @@
 
 #__subtrans_overlay .__subtrans_en {
   display: inline-block;
+  /* Order punctuation by the text's own language, not the (RTL) page. */
+  unicode-bidi: plaintext;
   max-width: 84vw;
   background: rgba(0, 0, 0, 0.72);
   color: #fff;
