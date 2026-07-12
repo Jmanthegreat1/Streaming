@@ -195,6 +195,7 @@ async function ensureOffscreen() {
 }
 
 // ---------- messages ----------
+let lastWarm = 0; // last time we pinged the server awake (see "warmServer")
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === "translate") {
     (async () => {
@@ -289,6 +290,19 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       }
     })();
     return true;
+  }
+
+  if (msg.type === "warmServer") {
+    // A free Hugging Face Space sleeps when idle and takes ~30s+ to wake. Hit
+    // its health route the moment the extension is enabled so it's awake
+    // before the first subtitle needs it. Throttled — apply() re-runs on
+    // every settings change and the wake only needs to happen once in a while.
+    if (msg.backendUrl && Date.now() - lastWarm > 5 * 60 * 1000) {
+      lastWarm = Date.now();
+      fetch(msg.backendUrl.replace(/\/+$/, "") + "/").catch(() => {});
+    }
+    sendResponse({ ok: true });
+    return;
   }
 
   if (msg.type === "prewarm") {

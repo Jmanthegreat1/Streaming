@@ -25,6 +25,8 @@ window.__subtransLA = (() => {
   let stState = "off"; // off | building | synced | unavailable
   let stDetail = "";
   let lastMainTime = -1;
+  let netPaused = false; // shadow downloads halted so the main video gets the pipe
+  let pendingSeek = false; // a main-video seek is waiting for the main to rebuffer first
 
   function setState(s, d) {
     stState = s;
@@ -115,7 +117,22 @@ window.__subtransLA = (() => {
     manifestUrl = null;
     flush();
     lastMainTime = -1;
+    netPaused = false;
+    pendingSeek = false;
     if (!keepState) setState("off");
+  }
+
+  // The main video owns the network. Every segment the shadow pulls while the
+  // main player is trying to buffer prolongs that buffering — over a slow or
+  // VPN'd connection the two re-buffering side by side after a seek can pin
+  // the real video at "loading" indefinitely.
+  function setNet(on) {
+    if (!hls || on === !netPaused) return;
+    try {
+      if (on) hls.startLoad();
+      else hls.stopLoad();
+    } catch (e) {}
+    netPaused = !on;
   }
 
   function flush() {
@@ -131,7 +148,8 @@ window.__subtransLA = (() => {
     // A real seek (not playback jitter) invalidates everything read ahead.
     if (lastMainTime >= 0 && Math.abs(m.currentTime - lastMainTime) > 3) {
       flush();
-      force = true;
+      pendingSeek = true;
+      if (active()) setState("building", "re-reading after a jump");
     }
     lastMainTime = m.currentTime;
     // The shadow must be playing the SAME video. If the durations disagree,
@@ -145,6 +163,15 @@ window.__subtransLA = (() => {
     ) {
       return fail("stream doesn't match the video (ad or different edit)");
     }
+    // Main video starved of data (buffering after a seek, or a mid-play
+    // stall): stop the shadow's downloads and just wait — the pipe belongs
+    // to the real player until it's healthy again.
+    if (m.readyState < 3) {
+      setNet(false);
+      if (!shadow.paused) shadow.pause();
+      return;
+    }
+    setNet(true);
     shadow.playbackRate = m.playbackRate || 1;
     const target = Math.min(
       m.currentTime + LOOKAHEAD,
@@ -154,7 +181,8 @@ window.__subtransLA = (() => {
     // Fell behind (seek, stall, startup): jump forward. Got too far ahead
     // (main is buffering): just hold — never seek backward, that would
     // re-scan ground we already covered.
-    if (force || lead < LOOKAHEAD - SLACK) {
+    if (force || pendingSeek || lead < LOOKAHEAD - SLACK) {
+      pendingSeek = false;
       try { shadow.currentTime = Math.max(0, target); } catch (e) {}
     }
     const wantPlay = !m.paused && !m.ended && lead <= LOOKAHEAD + SLACK;

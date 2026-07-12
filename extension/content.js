@@ -227,6 +227,10 @@
   let laDisplaying = false; // look-ahead cues currently own the overlay
   const OCR_CONCURRENCY = 2; // parallel reads; more than this steals CPU from the video
   const SENT_WINDOW_MS = 5000; // how long a sent line blocks an identical re-send
+  // A result older than this describes a line that's already gone (subtitles
+  // run 2-4s) — showing it now is worse than showing nothing. Happens when the
+  // free server was asleep and the first requests took ~30s to come back.
+  const RESULT_STALE_MS = 4500;
 
   // Time-based (not a plain "last hash") so a line can repeat later in the
   // show, but a flickering line doesn't get read twice back-to-back.
@@ -490,8 +494,8 @@
           (tainted ? " · screenshot capture" : " · video read")
         );
         const tr = scrubForDisplay(resp.translation || "");
-        if (onText) onText(tr);
-        else if (tr) showResult(mySeq, tr);
+        if (onText) onText(tr); // look-ahead cues carry their own times — never stale
+        else if (tr && performance.now() - t0 < RESULT_STALE_MS) showResult(mySeq, tr);
       }
     );
   }
@@ -736,6 +740,15 @@
         overlayEl.innerHTML = "";
       }
       return;
+    }
+    // The free Hugging Face Space sleeps when idle and takes ~30s to wake —
+    // poke it now so the FIRST subtitle isn't half a minute late (and then
+    // shown long after its moment has passed).
+    if (isTop && state.engine === "server" && state.backendUrl) {
+      chrome.runtime.sendMessage(
+        { type: "warmServer", backendUrl: state.backendUrl },
+        () => void chrome.runtime.lastError
+      );
     }
     if (state.mode === "text") {
       if (isTop && LA) LA.stop();
