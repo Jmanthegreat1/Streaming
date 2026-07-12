@@ -3,6 +3,14 @@
 //   OCR  mode — read burned-in subtitles from a region you draw, translate them,
 //               and lay the English right over the original.
 //
+// OCR mode has two gears. LOOK-AHEAD (the good one): a hidden shadow player
+// (lookahead.js) runs the same HLS stream ~8s ahead; we read the subtitles from
+// its frames, so every English line is ready BEFORE the Hebrew appears and is
+// shown exactly on time. INSTANT (fallback, ~1s behind): read the visible
+// frame the moment a line appears — used when look-ahead isn't possible (live
+// broadcast, DRM, no manifest) or hasn't caught up yet (startup, right after
+// a seek).
+//
 // OCR reads pixels straight from the <video> frame when possible (that frame
 // doesn't contain our overlay, so we can cover the original cleanly). If the
 // video can't be read into a canvas (cross-origin taint), it falls back to a
@@ -133,6 +141,7 @@
   // rather than shown late — an ordered hold-each-line queue was tried here
   // and it drifted seconds behind live playback.
   function showResult(mySeq, text) {
+    if (laDisplaying) return; // look-ahead cues own the overlay right now
     if (mySeq <= shownSeq) return; // an older line finished late — stale, skip
     shownSeq = mySeq;
     overlayCleared = false;
@@ -215,6 +224,7 @@
   let inflight = 0; // OCR requests currently in flight (pooled across workers)
   let seq = 0; // line counter, so a late result for an old line can be dropped
   let shownSeq = 0; // seq of the line currently on the overlay
+  let laDisplaying = false; // look-ahead cues currently own the overlay
   const OCR_CONCURRENCY = 2; // parallel reads; more than this steals CPU from the video
   const SENT_WINDOW_MS = 5000; // how long a sent line blocks an identical re-send
 
@@ -292,6 +302,7 @@
   function largestVideo() {
     let best = null, area = 0;
     document.querySelectorAll("video").forEach((v) => {
+      if (v.hasAttribute("data-subtrans-shadow")) return; // our own look-ahead player
       const r = v.getBoundingClientRect();
       const a = r.width * r.height;
       if (a > area && v.videoWidth) {
@@ -373,7 +384,7 @@
       retroFlush(); // a brief line that just vanished still gets read
       cand = null;
       // Clear once there's been no subtitle on screen for a moment.
-      if (++emptyTicks >= 3 && !overlayCleared) {
+      if (++emptyTicks >= 3 && !overlayCleared && !laDisplaying) {
         overlayCleared = true;
         showCover("", rect);
       }
@@ -382,8 +393,8 @@
     }
     present = true;
     emptyTicks = 0;
-    // Read a line only once it's settled for 2 ticks — skips the unstable
-    // frames during a scene/subtitle transition that produce junk. Keep the
+    // Read a line only once it's held identical across consecutive ticks —
+    // skips the unstable frames during a transition that produce junk. Keep the
     // latest settled frame as a candidate so retroFlush can read a line that
     // disappears (or changes) before it ever reaches the 2-tick threshold.
     if (fp.hash === prevHash) {
@@ -400,7 +411,7 @@
       stableTicks = 0;
       cand = { hash: fp.hash, canvas, rect, ticks: 0, sent: false };
     }
-    if (stableTicks >= 2 && !recentlySent(fp.hash) && inflight < OCR_CONCURRENCY) {
+    if (stableTicks >= 1 && !recentlySent(fp.hash) && inflight < OCR_CONCURRENCY) {
       markSent(fp.hash);
       if (cand && cand.hash === fp.hash) cand.sent = true;
       sendOcr(canvas, rect);
@@ -408,7 +419,26 @@
     prevHash = fp.hash;
   }
 
-  function sendOcr(canvas, rect) {
+  // Apply the server's own near-white text mask CLIENT-side: white subtitle
+  // pixels stay white, everything else goes black. The server's threshold pass
+  // is idempotent on this, and a binary PNG uploads in ~5-20 KB instead of the
+  // 100-500 KB a raw video crop costs — a real chunk of the round-trip time.
+  function maskWhiteText(canvas) {
+    const ctx = canvas.getContext("2d");
+    const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const d = img.data;
+    for (let i = 0; i < d.length; i += 4) {
+      const v = d[i] >= 215 && d[i + 1] >= 215 && d[i + 2] >= 215 ? 255 : 0;
+      d[i] = d[i + 1] = d[i + 2] = v;
+      d[i + 3] = 255;
+    }
+    ctx.putImageData(img, 0, 0);
+    return canvas;
+  }
+
+  // onText (optional): receive the translated line instead of the overlay —
+  // the look-ahead scanner uses this to build timed cues.
+  function sendOcr(canvas, rect, onText) {
     const engine = state.engine;
     // The server rescales to ~900px anyway — don't upload a huge fullscreen
     // crop. (The local engine does its own downscale in the offscreen doc.)
@@ -420,6 +450,7 @@
       c.getContext("2d").drawImage(canvas, 0, 0, c.width, c.height);
       canvas = c;
     }
+    if (engine === "server") maskWhiteText(canvas);
     const image = canvas.toDataURL("image/png");
     const type = engine === "vision" ? "ocrVision" : engine === "server" ? "ocrTranslate" : "ocrLocal";
     const mySeq = ++seq;
@@ -452,7 +483,8 @@
           (tainted ? " · screenshot capture" : " · video read")
         );
         const tr = scrubForDisplay(resp.translation || "");
-        if (tr) showResult(mySeq, tr);
+        if (onText) onText(tr);
+        else if (tr) showResult(mySeq, tr);
       }
     );
   }
@@ -482,6 +514,7 @@
   function ocrTick() {
     if (!isTop || !state.enabled || state.mode !== "ocr") return;
     if (selecting) return scheduleOcr(); // paused while picking the box
+    if (laDisplaying) return scheduleOcr(); // look-ahead already read this part
     if (document.hidden || !state.ocrRegion) return scheduleOcr();
     if (state.engine === "server" && !state.backendUrl) return scheduleOcr();
     if (state.engine === "vision" && !state.visionKey) return scheduleOcr();
@@ -502,8 +535,141 @@
     // Screenshot fallback is rate-limited by Chrome (~2/s), so ease off there.
     if (isTop && state.enabled && state.mode === "ocr") {
       // On-device OCR wants CPU headroom, so poll a touch slower there.
-      ocrTimer = setTimeout(ocrTick, tainted ? 520 : state.engine === "local" ? 260 : 220);
+      ocrTimer = setTimeout(ocrTick, tainted ? 520 : state.engine === "local" ? 260 : 160);
     }
+  }
+
+  // ==========================================================================
+  // LOOK-AHEAD (true sync)
+  // ==========================================================================
+  // The shadow player (lookahead.js) runs the same stream ~8s ahead. This
+  // scanner reads ITS frames with the same fingerprint/stability logic and
+  // turns each line into a timed cue; the display loop then shows the cue
+  // matching the real video's clock, so the English lands exactly on time.
+  const LA = window.__subtransLA;
+  const SCAN_LAG = 0.35; // stability detection notices a line ~this late
+  let shTimer = null;
+  let shPrevHash = "";
+  let shTicks = 0;
+  let shLine = null; // { hash, gen, start, end, cueAdded, text }
+  const shTextByHash = new Map(); // translated text per fingerprint (repeats are free)
+
+  // Crop the region straight from the shadow's intrinsic frame (no layout box —
+  // the stored region is fractions of the video, which is exactly what we need).
+  function shadowCrop(v) {
+    const r = state.ocrRegion;
+    const sw = r.fw * v.videoWidth, sh = r.fh * v.videoHeight;
+    if (sw < 2 || sh < 2) return null;
+    const c = document.createElement("canvas");
+    c.width = Math.round(sw);
+    c.height = Math.round(sh);
+    const ctx = c.getContext("2d");
+    try {
+      ctx.drawImage(v, r.fx * v.videoWidth, r.fy * v.videoHeight, sw, sh, 0, 0, c.width, c.height);
+      ctx.getImageData(0, 0, 1, 1); // throws if the stream taints the canvas
+      return c;
+    } catch (e) {
+      LA.fail("video frames are not readable (protected)");
+      return null;
+    }
+  }
+
+  function shCloseLine(t) {
+    const line = shLine;
+    shLine = null;
+    if (!line) return;
+    line.end = Math.max(line.start + 0.3, t - 0.1);
+    // If the text is still in flight, the OCR callback files the finished cue.
+    if (line.cueAdded) LA.closeCue(line.gen, line.start, line.end);
+  }
+
+  function shadowTick() {
+    shTimer = null;
+    scheduleShadow();
+    if (!state.enabled || state.mode !== "ocr" || !state.ocrRegion || !LA.active()) return;
+    const v = LA.video();
+    if (!v || v.readyState < 2 || v.seeking || v.paused) return;
+    const t = v.currentTime;
+    const canvas = shadowCrop(v);
+    if (!canvas) return;
+    const fp = fingerprint(canvas);
+    const hasText = fp.bright >= 8 && fp.activeCols >= 3;
+    if (!hasText) {
+      if (shLine) shCloseLine(t);
+      shTicks = 0;
+    } else if (fp.hash === shPrevHash) {
+      shTicks++;
+      if (shTicks >= 1 && (!shLine || shLine.hash !== fp.hash)) {
+        if (shLine) shCloseLine(t);
+        const line = {
+          hash: fp.hash,
+          gen: LA.gen(),
+          start: Math.max(0, t - SCAN_LAG),
+          end: null,
+          cueAdded: false,
+        };
+        shLine = line;
+        const cached = shTextByHash.get(fp.hash);
+        if (cached !== undefined) {
+          if (cached) {
+            LA.addCue(line.gen, { start: line.start, end: line.end, text: cached });
+            line.cueAdded = true;
+          }
+        } else {
+          sendOcr(canvas, null, (text) => {
+            shTextByHash.set(line.hash, text);
+            if (shTextByHash.size > 500) shTextByHash.delete(shTextByHash.keys().next().value);
+            if (!text) return; // server judged it noise — nothing to show there
+            LA.addCue(line.gen, { start: line.start, end: line.end, text });
+            line.cueAdded = true;
+            if (line.end != null) LA.closeCue(line.gen, line.start, line.end);
+          });
+        }
+      }
+    } else {
+      if (shLine) shCloseLine(t);
+      shTicks = 0;
+    }
+    shPrevHash = fp.hash;
+    LA.markScanned(LA.gen(), t);
+  }
+
+  function scheduleShadow() {
+    if (!shTimer && isTop && state.enabled && state.mode === "ocr") {
+      shTimer = setTimeout(shadowTick, 160);
+    }
+  }
+
+  // Show whatever cue covers the real video's current moment. While coverage
+  // holds, the instant path stands down; the moment it doesn't (seek, startup,
+  // look-ahead unavailable) the instant path takes the overlay back.
+  let dispTimer = null;
+  let lastCueText = null;
+  function displayTick() {
+    if (!state.enabled || state.mode !== "ocr" || !state.ocrRegion || selecting) {
+      laDisplaying = false;
+      return;
+    }
+    const v = largestVideo();
+    if (!v || !LA.covers(v.currentTime)) {
+      if (laDisplaying) {
+        laDisplaying = false;
+        lastCueText = null;
+      }
+      return;
+    }
+    laDisplaying = true;
+    const text = LA.cueAt(v.currentTime);
+    if (text !== lastCueText) {
+      lastCueText = text;
+      overlayCleared = !text;
+      showCover(text, regionRect());
+    }
+  }
+
+  function maybeStartLookahead() {
+    if (!isTop || !LA) return;
+    if (state.enabled && state.mode === "ocr" && streamManifest) LA.start(streamManifest);
   }
 
   // ==========================================================================
@@ -512,6 +678,12 @@
   let pollTimer = null;
   function apply() {
     clearTimeout(ocrTimer);
+    clearTimeout(shTimer);
+    shTimer = null;
+    if (dispTimer) {
+      clearInterval(dispTimer);
+      dispTimer = null;
+    }
     if (pollTimer) {
       clearInterval(pollTimer);
       pollTimer = null;
@@ -529,8 +701,14 @@
     seq = 0;
     shownSeq = 0;
     lastText = "";
+    laDisplaying = false;
+    lastCueText = null;
+    shPrevHash = "";
+    shTicks = 0;
+    shLine = null;
 
     if (!state.enabled) {
+      if (isTop && LA) LA.stop();
       if (overlayEl) {
         overlayEl.style.display = "none";
         overlayEl.innerHTML = "";
@@ -538,6 +716,7 @@
       return;
     }
     if (state.mode === "text") {
+      if (isTop && LA) LA.stop();
       showText("", "");
       hookTextTracks();
       pollTimer = setInterval(hookTextTracks, 2000);
@@ -548,7 +727,10 @@
       if (state.engine === "local") {
         chrome.runtime.sendMessage({ type: "prewarm" }, () => void chrome.runtime.lastError);
       }
+      maybeStartLookahead();
       scheduleOcr();
+      scheduleShadow();
+      if (isTop) dispTimer = setInterval(displayTick, 100);
     }
   }
 
@@ -701,7 +883,18 @@
     t._timer = setTimeout(() => (t.style.display = "none"), 4000);
   }
 
-  chrome.runtime.onMessage.addListener((msg) => {
+  chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+    if (msg.type === "getStatus" && isTop) {
+      sendResponse({
+        enabled: state.enabled,
+        mode: state.mode,
+        engine: state.engine,
+        region: !!state.ocrRegion,
+        manifest: !!streamManifest,
+        la: LA ? LA.status() : { state: "off" },
+      });
+      return;
+    }
     if (msg.type === "startTeaching") startTeaching();
     if (msg.type === "startRegionSelect" && isTop) startRegionSelect();
     if (msg.type === "clearSelector") {
@@ -715,7 +908,8 @@
     }
   });
 
-  // --- prefetch probe: confirm we can reach the video stream (step 1) ---
+  // --- stream discovery: inject.js (MAIN world) reports the HLS manifest the
+  // page's player loads; that manifest is what the look-ahead shadow plays.
   let streamManifest = null;
   let segmentCount = 0;
   window.addEventListener("message", (e) => {
@@ -724,15 +918,13 @@
     if (s.kind === "manifest" && !streamManifest) {
       streamManifest = s.url;
       console.log("[SubTrans] manifest found:", s.url);
-      if (isTop) toast("Video stream found — prefetch is possible ✓");
+      maybeStartLookahead();
     } else if (s.kind === "segment") {
       segmentCount++;
       if (segmentCount === 1) console.log("[SubTrans] first media segment:", s.url);
-      if (segmentCount === 1 && isTop && !streamManifest) {
-        toast("Video segments found (no manifest) — prefetch may be possible");
-      }
     }
   });
 
+  if (isTop && LA) LA.init(largestVideo);
   loadSettings();
 })();

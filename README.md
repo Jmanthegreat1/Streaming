@@ -15,6 +15,16 @@ watch. Built for **כאן / Kan**, whose Hebrew subtitles are **burned into the 
 so the extension reads them off the screen with OCR, translates them, and shows English
 just above them.
 
+## How it stays on time: look-ahead sync
+Reading a subtitle *after* it appears always leaves a delay. So on streams that allow it,
+the extension runs a hidden **shadow player** on the same video ~8 seconds **ahead** of
+what you're watching, reads the subtitles from the future frames, translates them early,
+and shows each English line at the exact moment its Hebrew appears. The popup's status
+card tells you which mode you're in:
+- **Synced** — translations land on time (look-ahead is running).
+- **Instant mode (~1s behind)** — used at the very start, for a few seconds after you
+  skip around, and on streams where look-ahead isn't possible (live broadcasts, DRM).
+
 Connect your laptop to the TV with an **HDMI cable**, go fullscreen, turn it on, and the
 English subtitles appear on the big screen.
 

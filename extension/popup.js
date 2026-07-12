@@ -1,4 +1,5 @@
-// Popup: reads/writes settings and triggers the page pickers.
+// Popup: settings + a live status card showing what the extension is doing on
+// the current tab (synced ahead / instant mode / what's missing).
 
 const LANGUAGES = {
   English: "en", Arabic: "ar", Chinese: "zh-CN", Dutch: "nl", French: "fr",
@@ -10,7 +11,7 @@ const LANGUAGES = {
 const DEFAULTS = {
   enabled: false,
   mode: "ocr",
-  engine: "server", // free Hugging Face Space — OCR off-device so the video never lags
+  engine: "server",
   target: "en",
   backendUrl: "https://jmanthegreat1-subtitle-translate.hf.space",
   visionKey: "",
@@ -27,10 +28,11 @@ for (const [name, code] of Object.entries(LANGUAGES)) {
 function reflectControls() {
   const mode = $("mode").value;
   const engine = $("engine").value;
-  $("ocrControls").style.display = mode === "ocr" ? "" : "none";
+  $("engineRow").style.display = mode === "ocr" ? "" : "none";
+  $("selectArea").style.display = mode === "ocr" ? "" : "none";
   $("textControls").style.display = mode === "text" ? "" : "none";
-  $("req").textContent = mode === "ocr" && engine === "server" ? "(required)" : "";
-  $("reqVision").textContent = mode === "ocr" && engine === "vision" ? "(required)" : "";
+  $("visionField").style.display = mode === "ocr" && engine === "vision" ? "" : "none";
+  $("serverField").style.display = mode === "ocr" && engine === "server" ? "" : "none";
 }
 
 function reflectPower(on) {
@@ -40,6 +42,62 @@ function reflectPower(on) {
   $("powerLabel").textContent = on ? "ON" : "Turn ON";
 }
 
+// ---------- status card ----------
+function setStatus(kind, title, sub) {
+  const box = $("status");
+  box.classList.toggle("good", kind === "good");
+  box.classList.toggle("warn", kind === "warn");
+  $("statusTitle").textContent = title;
+  $("statusSub").textContent = sub || "";
+}
+
+function renderStatus(s) {
+  if (!s) {
+    setStatus("idle", "No video page detected",
+      "Open the show you want to watch, then reopen this popup.");
+    return;
+  }
+  if (!s.enabled) {
+    setStatus("idle", "Off", "Press the button above to start.");
+    return;
+  }
+  if (s.mode === "text") {
+    setStatus("good", "Reading the page's own subtitles", "");
+    return;
+  }
+  if (!s.region) {
+    setStatus("warn", "No subtitle box yet",
+      "Press “Select subtitle area” and drag a box over the Hebrew subtitles.");
+    return;
+  }
+  const la = s.la || { state: "off" };
+  if (la.state === "synced") {
+    setStatus("good", "Synced — translations arrive on time",
+      "Reading the stream " + Math.round(la.lead || 8) + "s ahead of playback.");
+  } else if (la.state === "building") {
+    setStatus("warn", "Preparing sync…",
+      "Buffering the stream ahead. Instant mode covers you meanwhile (~1s behind).");
+  } else if (la.state === "unavailable") {
+    setStatus("warn", "Instant mode (~1s behind)", "Sync isn't possible here: " + (la.detail || "unknown reason") + ".");
+  } else {
+    setStatus("warn", "Instant mode (~1s behind)",
+      s.manifest ? "Starting the sync engine…" : "Waiting to spot the video stream — press play.");
+  }
+}
+
+function pollStatus() {
+  chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+    if (!tabs[0]) return renderStatus(null);
+    chrome.tabs.sendMessage(tabs[0].id, { type: "getStatus" }, (resp) => {
+      if (chrome.runtime.lastError || !resp) return renderStatus(null);
+      renderStatus(resp);
+    });
+  });
+}
+pollStatus();
+setInterval(pollStatus, 1000);
+
+// ---------- settings wiring ----------
 chrome.storage.sync.get(DEFAULTS, (s) => {
   reflectPower(s.enabled);
   $("mode").value = s.mode;
@@ -47,11 +105,6 @@ chrome.storage.sync.get(DEFAULTS, (s) => {
   $("target").value = s.target;
   $("backendUrl").value = s.backendUrl;
   $("visionKey").value = s.visionKey;
-  reflectControls();
-});
-
-$("engine").addEventListener("change", (e) => {
-  chrome.storage.sync.set({ engine: e.target.value });
   reflectControls();
 });
 
@@ -65,13 +118,18 @@ $("power").addEventListener("click", () => {
 chrome.storage.onChanged.addListener((changes) => {
   if (changes.enabled) reflectPower(changes.enabled.newValue);
 });
-$("target").addEventListener("change", (e) => chrome.storage.sync.set({ target: e.target.value }));
-$("backendUrl").addEventListener("change", (e) => chrome.storage.sync.set({ backendUrl: e.target.value.trim() }));
-$("visionKey").addEventListener("change", (e) => chrome.storage.sync.set({ visionKey: e.target.value.trim() }));
+
+$("engine").addEventListener("change", (e) => {
+  chrome.storage.sync.set({ engine: e.target.value });
+  reflectControls();
+});
 $("mode").addEventListener("change", (e) => {
   chrome.storage.sync.set({ mode: e.target.value });
   reflectControls();
 });
+$("target").addEventListener("change", (e) => chrome.storage.sync.set({ target: e.target.value }));
+$("backendUrl").addEventListener("change", (e) => chrome.storage.sync.set({ backendUrl: e.target.value.trim() }));
+$("visionKey").addEventListener("change", (e) => chrome.storage.sync.set({ visionKey: e.target.value.trim() }));
 
 function sendToTab(message, close) {
   chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {

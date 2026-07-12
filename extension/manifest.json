@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Live Subtitle Translator",
-  "version": "1.1.0",
-  "description": "Translate on-screen subtitles to English live while you watch. On-device (Tesseract) or server OCR.",
+  "version": "1.2.0",
+  "description": "Translate burned-in subtitles live while you watch. Look-ahead sync reads the stream a few seconds early so the translation lands on time.",
   "permissions": ["storage", "activeTab", "offscreen"],
   "host_permissions": ["http://*/*", "https://*/*"],
   "background": {
@@ -22,6 +22,12 @@
       "run_at": "document_start",
       "world": "MAIN",
       "js": ["inject.js"]
+    },
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "all_frames": false,
+      "run_at": "document_idle",
+      "js": ["hls.min.js", "lookahead.js"]
     },
     {
       "matches": ["http://*/*", "https://*/*"],

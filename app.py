@@ -21,6 +21,7 @@ import binascii
 from functools import lru_cache
 from io import BytesIO
 
+import requests
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from deep_translator import GoogleTranslator
@@ -40,9 +41,23 @@ if _cmd:
 def _translate_one(text, source, target):
     """Translate one line. Cached so repeated subtitle lines are instant.
 
-    A fresh GoogleTranslator per call on purpose — it isn't thread-safe and
-    gunicorn may serve requests concurrently.
+    Primary path is Google's public gtx endpoint (the same one the extension
+    uses) — noticeably faster than deep_translator's page scrape. That scrape
+    stays as the fallback; a fresh GoogleTranslator per call on purpose — it
+    isn't thread-safe and gunicorn serves requests concurrently.
     """
+    try:
+        r = requests.get(
+            "https://translate.googleapis.com/translate_a/single",
+            params={"client": "gtx", "sl": source or "auto", "tl": target, "dt": "t", "q": text},
+            timeout=6,
+        )
+        r.raise_for_status()
+        out = "".join(seg[0] for seg in (r.json()[0] or []) if seg and seg[0])
+        if out:
+            return out
+    except Exception:
+        pass
     return GoogleTranslator(source=source, target=target).translate(text) or text
 
 
