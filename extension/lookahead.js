@@ -58,7 +58,9 @@ window.__subtransLA = (() => {
       "position:fixed;left:-99999px;top:0;width:320px;height:180px;pointer-events:none;opacity:0;";
     document.documentElement.appendChild(shadow);
 
-    hls = new Hls({ maxBufferLength: 15, backBufferLength: 5 });
+    // Keep the shadow CHEAP: it shares bandwidth and CPU with the visible
+    // player, and on a laptop two big decodes make the real video stutter.
+    hls = new Hls({ maxBufferLength: 10, backBufferLength: 4 });
     hls.on(Hls.Events.ERROR, (_, data) => {
       if (!data || !data.fatal) return;
       const drm = /key|drm/i.test(String(data.details || ""));
@@ -69,13 +71,14 @@ window.__subtransLA = (() => {
       if (data && data.details && data.details.live) fail("live broadcast — nothing to read ahead");
     });
     hls.on(Hls.Events.MANIFEST_PARSED, (_, data) => {
-      // Pin the smallest rendition that's still sharp enough to OCR (≥~720p) —
-      // ABR flapping would waste bandwidth and confuse the scanner.
+      // Pin the smallest rendition that's still readable for OCR (~480p —
+      // subtitle text is large). Higher levels double the bandwidth + decode
+      // cost and make the REAL video lag; ABR flapping would confuse the scanner.
       const levels = (data && data.levels) || [];
       let pick = -1, bestH = Infinity;
       levels.forEach((l, i) => {
         const h = l.height || 0;
-        if (h >= 700 && h < bestH) { bestH = h; pick = i; }
+        if (h >= 470 && h < bestH) { bestH = h; pick = i; }
       });
       if (pick < 0 && levels.length) {
         pick = 0;
@@ -131,6 +134,17 @@ window.__subtransLA = (() => {
       force = true;
     }
     lastMainTime = m.currentTime;
+    // The shadow must be playing the SAME video. If the durations disagree,
+    // we latched onto a different stream (a pre-roll ad's manifest, or the
+    // previous episode on an SPA navigation) — its cues would be wrong text
+    // at wrong times. Bail to instant mode; a fresh manifest restarts us.
+    if (
+      isFinite(m.duration) && m.duration > 0 &&
+      isFinite(shadow.duration) && shadow.duration > 0 &&
+      Math.abs(m.duration - shadow.duration) > 3
+    ) {
+      return fail("stream doesn't match the video (ad or different edit)");
+    }
     shadow.playbackRate = m.playbackRate || 1;
     const target = Math.min(
       m.currentTime + LOOKAHEAD,

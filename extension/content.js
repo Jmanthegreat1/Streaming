@@ -526,10 +526,13 @@
     if (state.engine === "server" && !state.backendUrl) return scheduleOcr();
     if (state.engine === "vision" && !state.visionKey) return scheduleOcr();
     // Subtitles only exist while the video is actually PLAYING. Menus, load
-    // screens and pause frames just feed the OCR junk (episode titles, clocks)
-    // that then flashes across the screen — stay silent until playback runs.
+    // screens, geo-block notices and pause frames just feed the OCR junk
+    // (episode titles, clocks) that then flashes across the screen — stay
+    // silent until playback runs. Only when the page has NO video element at
+    // all (player inside an iframe) is the blind screenshot path allowed.
     const vid = largestVideo();
-    if (vid && (vid.paused || vid.ended || vid.readyState < 2)) {
+    const hasVideoEl = !!document.querySelector("video:not([data-subtrans-shadow])");
+    if (vid ? vid.paused || vid.ended || vid.readyState < 2 : hasVideoEl) {
       if (!overlayCleared && !laDisplaying) {
         overlayCleared = true;
         showCover("", regionRect());
@@ -664,6 +667,7 @@
   let dispTimer = null;
   let lastCueText = null;
   function displayTick() {
+    watchMainVideo(); // keep tracking the player across SPA episode switches
     if (!state.enabled || state.mode !== "ocr" || !state.ocrRegion || selecting) {
       laDisplaying = false;
       return;
@@ -926,22 +930,59 @@
     }
   });
 
-  // --- stream discovery: inject.js (MAIN world) reports the HLS manifest the
-  // page's player loads; that manifest is what the look-ahead shadow plays.
+  // --- stream discovery: inject.js (MAIN world) reports the HLS manifests the
+  // page's player loads; the shadow plays the one belonging to the CURRENT
+  // video. That's not simply the first one seen — Kan runs pre-roll ads and
+  // navigates between episodes without a page reload, so we re-adopt whenever
+  // the player switches content (its <video> fires emptied/loadstart).
   let streamManifest = null;
+  let lastManifest = null; // most recent manifest report: { url, t }
   let segmentCount = 0;
+  let adoptTimer = null;
   window.addEventListener("message", (e) => {
     if (e.source !== window || !e.data || !e.data.__subtrans_stream) return;
     const s = e.data.__subtrans_stream;
-    if (s.kind === "manifest" && !streamManifest) {
-      streamManifest = s.url;
-      console.log("[SubTrans] manifest found:", s.url);
-      maybeStartLookahead();
+    if (s.kind === "manifest") {
+      lastManifest = { url: s.url, t: performance.now() };
+      if (!streamManifest) {
+        streamManifest = s.url;
+        console.log("[SubTrans] manifest found:", s.url);
+        maybeStartLookahead();
+      }
     } else if (s.kind === "segment") {
       segmentCount++;
       if (segmentCount === 1) console.log("[SubTrans] first media segment:", s.url);
     }
   });
+
+  // Watch the main <video> for content switches: everything the shadow read
+  // belongs to the OLD stream, and the freshest manifest is the new video's.
+  let watchedVideo = null;
+  function watchMainVideo() {
+    if (!isTop) return;
+    const v = largestVideo();
+    if (!v || v === watchedVideo) return;
+    const isFirst = !watchedVideo;
+    watchedVideo = v;
+    const onNewContent = () => {
+      if (LA) LA.stop();
+      streamManifest = null;
+      clearTimeout(adoptTimer);
+      // Give the player a beat to fetch the new video's manifest, then take
+      // the freshest one reported. Older than ~10s = belongs to the old video.
+      adoptTimer = setTimeout(() => {
+        if (lastManifest && performance.now() - lastManifest.t < 10000) {
+          streamManifest = lastManifest.url;
+          console.log("[SubTrans] content switched — adopting manifest:", streamManifest);
+          maybeStartLookahead();
+        }
+      }, 1200);
+    };
+    v.addEventListener("emptied", onNewContent);
+    v.addEventListener("loadstart", onNewContent);
+    // A replaced element (not the one we were watching) is itself a switch.
+    if (!isFirst) onNewContent();
+  }
 
   if (isTop && LA) LA.init(largestVideo);
   loadSettings();
