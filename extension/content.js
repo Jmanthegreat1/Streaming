@@ -273,7 +273,14 @@
     s = s.replace(/[<>#*|~=^_{}\[\]\\/@`\x00-\x1f\x7f]/g, " ");
     s = s.replace(/\s+([,.;:?!])/g, "$1");
     s = s.replace(/\s+/g, " ").trim();
-    return /[\p{L}\p{N}]/u.test(s) ? s : "";
+    if (!/[\p{L}\p{N}]/u.test(s)) return "";
+    // A subtitle is a line or two of prose. A wall of text or number soup is
+    // a menu / schedule / episode-picker screen the OCR wandered onto — junk.
+    if (s.length > 140) return "";
+    const letters = (s.match(/\p{L}/gu) || []).length;
+    const digits = (s.match(/\d/g) || []).length;
+    if (letters < 2 || digits > letters) return "";
+    return s;
   }
 
   // Region is stored as fractions of the VIDEO element, so it tracks the video
@@ -518,6 +525,17 @@
     if (document.hidden || !state.ocrRegion) return scheduleOcr();
     if (state.engine === "server" && !state.backendUrl) return scheduleOcr();
     if (state.engine === "vision" && !state.visionKey) return scheduleOcr();
+    // Subtitles only exist while the video is actually PLAYING. Menus, load
+    // screens and pause frames just feed the OCR junk (episode titles, clocks)
+    // that then flashes across the screen — stay silent until playback runs.
+    const vid = largestVideo();
+    if (vid && (vid.paused || vid.ended || vid.readyState < 2)) {
+      if (!overlayCleared && !laDisplaying) {
+        overlayCleared = true;
+        showCover("", regionRect());
+      }
+      return scheduleOcr();
+    }
     const rect = regionRect();
     if (!tainted) {
       const c = grabFromVideo(rect);
