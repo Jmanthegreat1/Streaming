@@ -10,7 +10,9 @@
 // working exactly as before.
 window.__subtransLA = (() => {
   const LOOKAHEAD = 8; // seconds the shadow runs ahead of the visible video
-  const SLACK = 1.5; // allowed drift before we re-seek / hold the shadow
+  const SLACK = 1.5; // allowed drift before we hold / speed up the shadow
+  const CATCHUP_RATE = 1.5; // shadow speed while rebuilding its lead (never seeks forward)
+  const MAX_OPEN_CUE = 7; // a cue whose end was never observed can't linger past this
 
   let shadow = null;
   let hls = null;
@@ -172,20 +174,29 @@ window.__subtransLA = (() => {
       return;
     }
     setNet(true);
-    shadow.playbackRate = m.playbackRate || 1;
-    const target = Math.min(
-      m.currentTime + LOOKAHEAD,
-      (isFinite(shadow.duration) ? shadow.duration : Infinity) - 0.4
-    );
-    const lead = shadow.currentTime - m.currentTime;
-    // Fell behind (seek, stall, startup): jump forward. Got too far ahead
-    // (main is buffering): just hold — never seek backward, that would
-    // re-scan ground we already covered.
-    if (force || pendingSeek || lead < LOOKAHEAD - SLACK) {
+    const dur = isFinite(shadow.duration) && shadow.duration > 0 ? shadow.duration : Infinity;
+    // Seek ONLY on a fresh start / after a real main-video seek — and to the
+    // main video's own position, so coverage is contiguous from the head.
+    // Mid-play the shadow must NEVER jump forward to catch up: every jump
+    // leaves a hole of subtitles that were simply never read (missing lines)
+    // and strands the line that was open at jump time with a far-too-late end
+    // (a stale sentence lingering over different dialogue). Instead it catches
+    // up by PLAYING faster — 1.5x at 480p is cheap and closes the gap smoothly.
+    // One seek exception: if the shadow fell BEHIND the live playhead (its
+    // buffer starved while the main played on), jumping to the head skips only
+    // ground that already played — nothing we'd ever scan — and 1.5x alone
+    // could take minutes to close that gap.
+    if (force || pendingSeek || shadow.currentTime - m.currentTime < -1.5) {
       pendingSeek = false;
-      try { shadow.currentTime = Math.max(0, target); } catch (e) {}
+      try { shadow.currentTime = Math.max(0, Math.min(m.currentTime + 0.3, dur - 0.4)); } catch (e) {}
     }
-    const wantPlay = !m.paused && !m.ended && lead <= LOOKAHEAD + SLACK;
+    const lead = shadow.currentTime - m.currentTime;
+    shadow.playbackRate = (m.playbackRate || 1) * (lead < LOOKAHEAD - SLACK ? CATCHUP_RATE : 1);
+    // The shadow keeps reading ahead even while the main video is paused —
+    // that's what lets a held/paused video resume with its lines already
+    // translated. Too far ahead: just hold (never seek backward, that would
+    // re-scan ground we already covered).
+    const wantPlay = !m.ended && lead <= LOOKAHEAD + SLACK && shadow.currentTime < dur - 0.3;
     if (wantPlay && shadow.paused) shadow.play().catch(() => {});
     else if (!wantPlay && !shadow.paused) shadow.pause();
     if (stState === "building" && coveredUntil > m.currentTime + 0.5) setState("synced");
@@ -211,13 +222,19 @@ window.__subtransLA = (() => {
 
   function addCue(g, cue) {
     if (g !== gen || !cue || !cue.text) return;
+    if (cue.end != null) cue.end = Math.min(cue.end, cue.start + MAX_OPEN_CUE);
     cues.push(cue);
     cues.sort((a, b) => a.start - b.start);
   }
 
   function closeCue(g, start, end) {
     if (g !== gen) return;
-    for (const c of cues) if (c.start === start) { c.end = end; return; }
+    // A close that lands absurdly late (a stall between the line's start and
+    // its observed end) must not stretch the cue — no subtitle runs longer
+    // than MAX_OPEN_CUE.
+    for (const c of cues) {
+      if (c.start === start) { c.end = Math.min(end, c.start + MAX_OPEN_CUE); return; }
+    }
   }
 
   // Is video-time t inside the region we've actually read ahead? The scan
@@ -230,7 +247,10 @@ window.__subtransLA = (() => {
   function cueAt(t) {
     for (let i = cues.length - 1; i >= 0; i--) {
       const c = cues[i];
-      if (c.start <= t + 0.05 && (c.end == null || t < c.end)) return c.text;
+      // A cue whose end was never observed still expires — an open cue must
+      // not sit on screen through later (untranslated) dialogue.
+      const end = c.end != null ? c.end : c.start + MAX_OPEN_CUE;
+      if (c.start <= t + 0.05 && t < end) return c.text;
       if (c.start < t - 45) break; // sorted; nothing earlier can still be showing
     }
     return "";

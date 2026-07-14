@@ -12,7 +12,12 @@ Chrome **stable ignores `--load-extension`** (v137+). Use Chrome for Testing:
 cd <scratchpad> && npm i puppeteer-core && npx @puppeteer/browsers install chrome@stable
 ```
 
-Recipe (see the pattern in a past session's `drive3.js`):
+Recipe (see the pattern in a past session's `drive3.js` / `drive4.js` — drive4 also
+checks priming holds the video and that the shadow NEVER seeks forward while ahead).
+Old scratchpads keep `node_modules` + `page.html`, but temp cleanup may delete the
+Chrome binary itself — if launch says "Browser was not found", reinstall with
+`npx @puppeteer/browsers install chrome@150.0.7871.115` (a zombie chrome.exe from a
+crashed run also blocks relaunch: kill scratchpad-path chrome.exe, not the user's).
 1. Serve a small HTML page over **http://localhost** (content scripts don't run on `file://`)
    that plays a public HLS VOD via hls.js CDN — `https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8`.
 2. `puppeteer.launch({ executablePath: <chrome-for-testing>, headless: false,

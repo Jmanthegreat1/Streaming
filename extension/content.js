@@ -425,6 +425,14 @@
     if (stableTicks >= 1 && !recentlySent(fp.hash) && inflight < OCR_CONCURRENCY) {
       markSent(fp.hash);
       if (cand && cand.hash === fp.hash) cand.sent = true;
+      // A NEW line is confirmed on screen: whatever translation is still up
+      // belongs to the PREVIOUS line — take it down now. If this line's read
+      // comes back as junk/empty, the screen stays honest instead of leaving
+      // the old sentence stuck over different Hebrew.
+      if (!overlayCleared && !laDisplaying) {
+        overlayCleared = true;
+        showCover("", rect);
+      }
       sendOcr(canvas, rect);
     }
     prevHash = fp.hash;
@@ -615,6 +623,11 @@
     const v = LA.video();
     if (!v || v.readyState < 2 || v.seeking || v.paused) return;
     const t = v.currentTime;
+    // While catching up the shadow can sit at/behind the live playhead; frames
+    // that already played are history — reading them would file cues whose
+    // moment has passed (they'd flash up late over the wrong dialogue).
+    const mv = largestVideo();
+    if (mv && t < mv.currentTime - 0.75) return;
     const canvas = shadowCrop(v);
     if (!canvas) return;
     const fp = fingerprint(canvas);
@@ -629,7 +642,9 @@
         const line = {
           hash: fp.hash,
           gen: LA.gen(),
-          start: Math.max(0, t - SCAN_LAG),
+          // Detection lag is measured in real time; at catch-up speed the
+          // video moved further during it.
+          start: Math.max(0, t - SCAN_LAG * (v.playbackRate || 1)),
           end: null,
           cueAdded: false,
         };
@@ -665,6 +680,70 @@
     }
   }
 
+  // ---- priming: hold the video while the opening lines get translated ----
+  // Whenever a fresh scan starts (enable, page load, seek, episode switch) the
+  // first lines would otherwise play before their translations exist. So: pause
+  // the video, show "Translating…", let the shadow read the opening stretch,
+  // then auto-resume — the lines are ready the moment they're needed.
+  const PRIME_AHEAD = 3.5; // release once the scan reaches this far past the head
+  const PRIME_MAX_MS = 12000; // never hold the user's video longer than this
+  let primeGen = -1; // look-ahead generation we already primed (or declined)
+  let priming = null; // { v, t0 } while we're holding the main video paused
+
+  function releasePriming(resume) {
+    if (!priming) return;
+    const v = priming.v;
+    priming = null;
+    overlayCleared = true;
+    // Hide directly — this can run from apply() after the region was erased,
+    // when regionRect() would have nothing to measure against.
+    if (overlayEl) {
+      overlayEl.style.display = "none";
+      overlayEl.innerHTML = "";
+    }
+    if (resume && v && v.paused && v.isConnected) v.play().catch(() => {});
+  }
+
+  // Returns true while the hold is on (the overlay is ours, showing the notice).
+  function primeTick() {
+    if (!LA) return false;
+    const g = LA.gen();
+    if (priming) {
+      const v = priming.v;
+      const ready = LA.status().coveredUntil >= v.currentTime + PRIME_AHEAD;
+      const overdue = performance.now() - priming.t0 > PRIME_MAX_MS;
+      if (!v.isConnected || !LA.active() || ready || overdue) {
+        releasePriming(true);
+        return false;
+      }
+      // The user (or the page) pressed play themselves — don't fight them.
+      if (!v.paused) {
+        releasePriming(false);
+        return false;
+      }
+      return true;
+    }
+    if (g === primeGen) return false; // this scan was already primed (or skipped)
+    if (!LA.active()) return false; // not scanning (yet) — check again next tick
+    // The scan is already underway: the moment to prime has passed for this
+    // generation (its opening lines are being read regardless).
+    if (LA.status().coveredUntil > 0) {
+      primeGen = g;
+      return false;
+    }
+    const v = largestVideo();
+    // Hold only a video that's actually playing — never pause one the user
+    // paused — and only once it's really up (a video still loading is a
+    // TRANSIENT state: keep checking rather than forfeit this generation).
+    if (!v || v.paused || v.ended || v.readyState < 2) return false;
+    primeGen = g;
+    v.pause();
+    priming = { v, t0: performance.now() };
+    overlayCleared = false;
+    showCover("Translating…", regionRect());
+    return true;
+  }
+
   // Show whatever cue covers the real video's current moment. While coverage
   // holds, the instant path stands down; the moment it doesn't (seek, startup,
   // look-ahead unavailable) the instant path takes the overlay back.
@@ -674,6 +753,11 @@
     watchMainVideo(); // keep tracking the player across SPA episode switches
     if (!state.enabled || state.mode !== "ocr" || !state.ocrRegion || selecting) {
       laDisplaying = false;
+      releasePriming(false);
+      return;
+    }
+    if (primeTick()) {
+      laDisplaying = true; // the notice owns the overlay; instant path stays off it
       return;
     }
     const v = largestVideo();
@@ -732,6 +816,8 @@
     shPrevHash = "";
     shTicks = 0;
     shLine = null;
+    // Never leave the user's video frozen behind a hold we can no longer manage.
+    releasePriming(true);
 
     if (!state.enabled) {
       if (isTop && LA) LA.stop();
