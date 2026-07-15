@@ -37,6 +37,15 @@ crashed run also blocks relaunch: kill scratchpad-path chrome.exe, not the user'
 Gotcha: when the popup is opened as a normal *tab*, its own status card says
 "No video page detected" (tabs.query returns the popup tab itself) — test artifact only.
 
+**Kan itself can't be tested from this machine**: kan.org.il pages load, but the
+Redge CDN (`*.il.cdn-redge.media`) geo-blocks every media request with 403 — the
+video never leaves readyState 0 (the user watches via VPN). Player facts learned
+anyway: inline top-frame `div.redge-player` (no player iframe), HLS VOD at
+`.../Manifest.ism/playlist.m3u8?fmp4`, `data-auto-play="false"`, pre-roll ads.
+For Kan-shaped flows use the local ad-then-content swap page (`page-ad.html` +
+`drive-ad.js`, this session's scratchpad) which mimics: content manifest fetched
+at page load → "ad" plays → swap on the same `<video>` (emptied/loadstart).
+
 ## Server
 `https://jmanthegreat1-subtitle-translate.hf.space` (deploy = `git push space main`).
 Time endpoints with curl **on one connection** (separate curl runs pay ~0.7s TLS setup):

@@ -227,9 +227,12 @@
   let laDisplaying = false; // look-ahead cues currently own the overlay
   const OCR_CONCURRENCY = 2; // parallel reads; more than this steals CPU from the video
   const SENT_WINDOW_MS = 5000; // how long a sent line blocks an identical re-send
-  // A result older than this describes a line that's already gone (subtitles
-  // run 2-4s) — showing it now is worse than showing nothing. Happens when the
-  // free server was asleep and the first requests took ~30s to come back.
+  // A slow result MIGHT describe a line that's already gone (subtitles run
+  // 2-4s). But "slow" alone doesn't prove that — on a slow connection every
+  // round trip is slow, and dropping them all means NO subtitle ever shows.
+  // So a late result is only dropped if the line it belongs to is no longer
+  // on screen (the region's fingerprint moved on); if the Hebrew is still up,
+  // late is far better than never.
   const RESULT_STALE_MS = 4500;
 
   // Time-based (not a plain "last hash") so a line can repeat later in the
@@ -257,7 +260,7 @@
         inflight < OCR_CONCURRENCY + 1) {
       cand.sent = true;
       markSent(cand.hash);
-      sendOcr(cand.canvas, cand.rect);
+      sendOcr(cand.canvas, cand.rect, null, cand.hash);
     }
   }
 
@@ -433,7 +436,7 @@
         overlayCleared = true;
         showCover("", rect);
       }
-      sendOcr(canvas, rect);
+      sendOcr(canvas, rect, null, fp.hash);
     }
     prevHash = fp.hash;
   }
@@ -457,7 +460,9 @@
 
   // onText (optional): receive the translated line instead of the overlay —
   // the look-ahead scanner uses this to build timed cues.
-  function sendOcr(canvas, rect, onText) {
+  // hash (optional): the fingerprint of the line this read belongs to, so a
+  // slow result can check whether that line is still on screen.
+  function sendOcr(canvas, rect, onText, hash) {
     const engine = state.engine;
     // The server rescales to ~900px anyway — don't upload a huge fullscreen
     // crop. (The local engine does its own downscale in the offscreen doc.)
@@ -503,7 +508,8 @@
         );
         const tr = scrubForDisplay(resp.translation || "");
         if (onText) onText(tr); // look-ahead cues carry their own times — never stale
-        else if (tr && performance.now() - t0 < RESULT_STALE_MS) showResult(mySeq, tr);
+        else if (tr && (performance.now() - t0 < RESULT_STALE_MS || (hash && hash === prevHash)))
+          showResult(mySeq, tr);
       }
     );
   }
@@ -744,6 +750,45 @@
     return true;
   }
 
+  // Watchdog for a silent look-ahead: coverage says "this moment is read" so
+  // the instant path stands down — but if Hebrew is VISIBLY on screen and the
+  // cue store keeps answering with nothing, the shadow is reading the wrong
+  // thing (wrong stream, wrong frames, every read failing). Without this check
+  // that state is a permanently blank overlay. Give look-ahead a few seconds'
+  // benefit of the doubt (one genuinely missed line is normal), then hand the
+  // screen back to instant mode for good.
+  let laWatchLast = 0;
+  let laWatchBad = 0; // ~600ms of visible-but-untranslated Hebrew per point
+  function laSilentWatchdog(v) {
+    const now = performance.now();
+    if (now - laWatchLast < 600) return;
+    laWatchLast = now;
+    if (v.paused || v.ended || v.readyState < 2) return; // menus/pauses prove nothing
+    // While the lead is still building, a line can reach the playhead before
+    // its translation lands (in-flight OCR) — that self-heals, don't punish it.
+    if (LA.status().lead < 6) return;
+    const c = grabFromVideo(regionRect());
+    if (!c) return; // unreadable frame — the instant path has the same problem
+    const fp = fingerprint(c);
+    if (fp.bright >= 8 && fp.activeCols >= 3) {
+      if (++laWatchBad >= 7) {
+        laWatchBad = 0;
+        LA.fail("subtitles are on screen but the read-ahead isn't seeing them");
+      }
+    } else if (laWatchBad > 0) laWatchBad--;
+  }
+
+  // Tell the user (once per reason) when true sync gives up — otherwise "no
+  // notice, no sync" looks like the extension doing nothing at all.
+  let laToldReason = "";
+  function laAnnounce() {
+    const s = LA.status();
+    if (s.state === "unavailable" && s.detail && s.detail !== laToldReason) {
+      laToldReason = s.detail;
+      toast("Live sync off (" + s.detail + ") — instant mode, ~1s behind.");
+    }
+  }
+
   // Show whatever cue covers the real video's current moment. While coverage
   // holds, the instant path stands down; the moment it doesn't (seek, startup,
   // look-ahead unavailable) the instant path takes the overlay back.
@@ -756,6 +801,7 @@
       releasePriming(false);
       return;
     }
+    laAnnounce();
     if (primeTick()) {
       laDisplaying = true; // the notice owns the overlay; instant path stays off it
       return;
@@ -766,10 +812,13 @@
         laDisplaying = false;
         lastCueText = null;
       }
+      laWatchBad = 0;
       return;
     }
     laDisplaying = true;
     const text = LA.cueAt(v.currentTime);
+    if (text) laWatchBad = 0;
+    else laSilentWatchdog(v);
     if (text !== lastCueText) {
       lastCueText = text;
       overlayCleared = !text;
@@ -813,6 +862,8 @@
     lastText = "";
     laDisplaying = false;
     lastCueText = null;
+    laWatchBad = 0;
+    laWatchLast = 0;
     shPrevHash = "";
     shTicks = 0;
     shLine = null;
@@ -1042,10 +1093,17 @@
     if (e.source !== window || !e.data || !e.data.__subtrans_stream) return;
     const s = e.data.__subtrans_stream;
     if (s.kind === "manifest") {
-      lastManifest = { url: s.url, t: performance.now() };
+      // Reports come in bursts: the master playlist first, its media
+      // playlists right after. Keep the burst's FIRST url (the master — it
+      // carries the rendition list, which the shadow needs to pin ~480p) and
+      // only refresh recency on the rest, so "freshest manifest" adoption
+      // doesn't accidentally land on a single-rendition media playlist.
+      const now = performance.now();
+      if (!lastManifest || now - lastManifest.t > 2000) lastManifest = { url: s.url, t: now };
+      else lastManifest.t = now;
       if (!streamManifest) {
-        streamManifest = s.url;
-        console.log("[SubTrans] manifest found:", s.url);
+        streamManifest = lastManifest.url; // burst head — master when we saw one
+        console.log("[SubTrans] manifest found:", streamManifest);
         maybeStartLookahead();
       }
     } else if (s.kind === "segment") {
@@ -1066,16 +1124,29 @@
     const onNewContent = () => {
       if (LA) LA.stop();
       streamManifest = null;
+      const switchAt = performance.now();
       clearTimeout(adoptTimer);
-      // Give the player a beat to fetch the new video's manifest, then take
-      // the freshest one reported. Older than ~10s = belongs to the old video.
-      adoptTimer = setTimeout(() => {
-        if (lastManifest && performance.now() - lastManifest.t < 10000) {
+      // A manifest fetched AFTER the switch is adopted the moment it's
+      // reported (the message listener fills a null streamManifest). This
+      // timer covers players that fetched the new video's manifest BEFORE
+      // switching to it — Kan grabs the episode manifest at page load, plays
+      // a pre-roll ad, and never re-fetches it — so a stale-looking manifest
+      // must still be adopted eventually. Wait a few seconds for a fresh one,
+      // then take the freshest we ever saw: if it turns out to belong to the
+      // wrong video, the shadow's duration check fails it cleanly into
+      // instant mode, which beats look-ahead never starting at all.
+      let tries = 0;
+      const adopt = () => {
+        if (streamManifest) return; // a fresh report already won
+        if (lastManifest && (lastManifest.t > switchAt - 10000 || ++tries >= 8)) {
           streamManifest = lastManifest.url;
           console.log("[SubTrans] content switched — adopting manifest:", streamManifest);
           maybeStartLookahead();
+        } else {
+          adoptTimer = setTimeout(adopt, 1000);
         }
-      }, 1200);
+      };
+      adoptTimer = setTimeout(adopt, 1200);
     };
     v.addEventListener("emptied", onNewContent);
     v.addEventListener("loadstart", onNewContent);
